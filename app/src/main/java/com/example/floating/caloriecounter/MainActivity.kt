@@ -10,6 +10,13 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -23,12 +30,14 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -314,318 +323,364 @@ fun CalorieCounterApp(repository: FoodRepository = FoodRepository()) {
                 }
             }
         ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp) // Default padding for content
-                    .padding(top = 32.dp), // Additional top margin of 26dp
-                verticalArrangement = Arrangement.Top,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            var prevDate by remember { mutableStateOf(currentDate) }
+            val forward = currentDate.isAfter(prevDate)
+            LaunchedEffect(currentDate) { prevDate = currentDate }
 
-                Row(
+            AnimatedContent(
+                targetState = currentDate,
+                transitionSpec = {
+                    val dir = if (forward) 1 else -1
+                    (slideInHorizontally(animationSpec = tween(220)) { it * dir } + fadeIn(tween(220)))
+                        .togetherWith(
+                            slideOutHorizontally(animationSpec = tween(220)) { -it * dir } + fadeOut(tween(220))
+                        )
+                },
+                label = "date-swipe"
+            ) { date ->
+
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .fillMaxSize()
+                        .padding(16.dp) // Default padding for content
+                        .padding(top = 32.dp), // Additional top margin of 26dp
+                    verticalArrangement = Arrangement.Top,
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // Previous button
-                    IconButton(onClick = { currentDate = currentDate.minusDays(1) }) {
-                        Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Previous", tint = Color.White)
-                    }
-                    // Current date text in the middle
-                    Text(text = currentDate.format(dateFormatter), fontSize = 20.sp, fontWeight = FontWeight.Medium)
-                    // Next button
-                    IconButton(onClick = { currentDate = currentDate.plusDays(1) }) {
-                        Icon(imageVector = Icons.Default.ArrowForward, contentDescription = "Next", tint = Color.White)
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Calories: ${formatDecimal(totals.totalCalories)}", fontSize = 32.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("Proteins: ${formatDecimal(totals.totalProteins)}g", fontSize = 24.sp)
-                Text("Fat: ${formatDecimal(totals.totalFat)}g", fontSize = 24.sp)
-                Text("Carbs: ${formatDecimal(totals.totalCarbs)}g", fontSize = 24.sp)
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Row for the Delete and Add buttons
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // State to control the visibility of the confirmation dialog
-                    var showClearDialog by remember { mutableStateOf(false) }
-
-                    Row {
-                        IconButton(onClick = { scanPreview.launch(null) }) {
-                            Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = "Scan barcode", tint = Color.White)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Previous button
+                        IconButton(onClick = { currentDate = currentDate.minusDays(1) }) {
+                            Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Previous", tint = Color.White)
                         }
-                        /*IconButton(onClick = { showClearDialog = true }) {
-                            Icon(imageVector = Icons.Default.Delete, contentDescription = "Clear totals", tint = Color.White)
-                        }*/
-                        IconButton(onClick = { context.startActivity(Intent(context, WeightActivity::class.java)) }) {
-                            Icon(
-                                imageVector = Icons.Default.Scale,
-                                contentDescription = "Weight",
-                                tint = Color.White
-                            )
+                        // Current date text in the middle
+                        Text(text = currentDate.format(dateFormatter), fontSize = 20.sp, fontWeight = FontWeight.Medium)
+                        // Next button
+                        IconButton(onClick = { currentDate = currentDate.plusDays(1) }) {
+                            Icon(imageVector = Icons.Default.ArrowForward, contentDescription = "Next", tint = Color.White)
                         }
-                        /*IconButton(onClick = {
-                            pasteInput = ""
-                            showPasteDialog = true
-                        }) {
-                            Icon(imageVector = Icons.Default.ContentPaste, contentDescription = "Paste food JSON", tint = Color.White)
-                        }*/
-                        IconButton(onClick = {
-                            // Try clipboard first
-                            val cm = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                            val text = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim()
+                    }
 
-                            fun tryHandleJsonFromClipboard(raw: String?): Boolean {
-                                if (raw.isNullOrBlank()) return false
-                                val t = raw.trim()
-                                return try {
-                                    if (t.startsWith("{") && t.endsWith("}")) {
-                                        val obj = JSONObject(t)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Calories: ${formatDecimal(totals.totalCalories)}", fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Proteins: ${formatDecimal(totals.totalProteins)}g", fontSize = 24.sp)
+                    Text("Fat: ${formatDecimal(totals.totalFat)}g", fontSize = 24.sp)
+                    Text("Carbs: ${formatDecimal(totals.totalCarbs)}g", fontSize = 24.sp)
 
-                                        // Same fields & behavior as your paste dialog "Confirm"
-                                        offName = obj.optString("foodName", "")
-                                        val weightStr = obj.optString("weightInGrams", "")
-                                        offCalories = obj.optString("calories", "")
-                                        offFat = obj.optString("fat", "")
-                                        offCarbs = obj.optString("carbs", "")
-                                        offProteins = obj.optString("protein", "")
+                    Spacer(modifier = Modifier.height(16.dp))
 
-                                        pasteProvidedWeight.value = weightStr
-                                        openDialogFromOff = true
-                                        true
-                                    } else {
-                                        false
-                                    }
-                                } catch (_: Exception) {
-                                    false
-                                }
+                    // Row for the Delete and Add buttons
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // State to control the visibility of the confirmation dialog
+                        var showClearDialog by remember { mutableStateOf(false) }
+
+                        Row {
+                            IconButton(onClick = { scanPreview.launch(null) }) {
+                                Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = "Scan barcode", tint = Color.White)
                             }
+                            /*IconButton(onClick = { showClearDialog = true }) {
+                                Icon(imageVector = Icons.Default.Delete, contentDescription = "Clear totals", tint = Color.White)
+                            }*/
 
-                            if (!tryHandleJsonFromClipboard(text)) {
-                                // Fallback → open the paste dialog normally
+                            IconButton(onClick = {
+                                // Propose a nice default name with date-time
+                                val stamp = java.time.LocalDateTime.now()
+                                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm"))
+                                saveZipLauncher.launch("CalorieCounter_Backup_$stamp.zip")
+                            }) {
+                                // You can use Archive or FileDownload—pick your favorite icon
+                                Icon(imageVector = Icons.Default.Archive, contentDescription = "Export backup", tint = Color.White)
+                            }
+                            IconButton(onClick = { context.startActivity(Intent(context, WeightActivity::class.java)) }) {
+                                Icon(
+                                    imageVector = Icons.Default.Scale,
+                                    contentDescription = "Weight",
+                                    tint = Color.White
+                                )
+                            }
+                            /*IconButton(onClick = {
                                 pasteInput = ""
                                 showPasteDialog = true
-                            }
-                        }) {
-                            Icon(
-                                imageVector = Icons.Default.ContentPaste,
-                                contentDescription = "Paste food JSON",
-                                tint = Color.White
-                            )
-                        }
+                            }) {
+                                Icon(imageVector = Icons.Default.ContentPaste, contentDescription = "Paste food JSON", tint = Color.White)
+                            }*/
+                            IconButton(onClick = {
+                                // Try clipboard first
+                                val cm = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                                val text = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()?.trim()
 
-                        IconButton(onClick = {
-                            // Propose a nice default name with date-time
-                            val stamp = java.time.LocalDateTime.now()
-                                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm"))
-                            saveZipLauncher.launch("CalorieCounter_Backup_$stamp.zip")
-                        }) {
-                            // You can use Archive or FileDownload—pick your favorite icon
-                            Icon(imageVector = Icons.Default.Archive, contentDescription = "Export backup", tint = Color.White)
-                        }
+                                fun tryHandleJsonFromClipboard(raw: String?): Boolean {
+                                    if (raw.isNullOrBlank()) return false
+                                    val t = raw.trim()
+                                    return try {
+                                        if (t.startsWith("{") && t.endsWith("}")) {
+                                            val obj = JSONObject(t)
 
-                    }
-
-                    /*// Copy Button
-                    Button(onClick = {
-
-                    }) {
-                        Icon(Icons.Default.Create, contentDescription = "Clear Totals")
-                        Spacer(modifier = Modifier.width(8.dp))
-                    }*/
-
-                    // Confirmation Dialog
-                    if (showClearDialog) {
-                        AlertDialog(
-                            onDismissRequest = { showClearDialog = false },
-                            confirmButton = {
-                                Button(onClick = {
-                                    scope.launch {
-                                        repository.clearTotals()
-                                        totals = repository.getAggregatedTotals() // Refresh totals
-                                        allTotals = repository.getAllTotals()
-                                    }
-                                    showClearDialog = false // Close the dialog
-                                }) {
-                                    Text("Yes")
-                                }
-                            },
-                            dismissButton = {
-                                Button(onClick = { showClearDialog = false }) {
-                                    Text("No")
-                                }
-                            },
-                            title = { Text("Clear Totals") },
-                            text = { Text("Are you sure you want to clear all totals?") }
-                        )
-                    }
-
-                    if (showPasteDialog) {
-                        AlertDialog(
-                            onDismissRequest = {
-                                showPasteDialog = false
-                                pasteInput = ""
-                            },
-                            confirmButton = {
-                                Button(onClick = {
-                                    // Try to parse JSON; if valid, prefill AddFoodDialog fields
-                                    val text = pasteInput.trim()
-                                    try {
-                                        if (text.startsWith("{") && text.endsWith("}")) {
-                                            val obj = JSONObject(text)
-
-                                            // All optional — only use if provided
+                                            // Same fields & behavior as your paste dialog "Confirm"
                                             offName = obj.optString("foodName", "")
                                             val weightStr = obj.optString("weightInGrams", "")
                                             offCalories = obj.optString("calories", "")
                                             offFat = obj.optString("fat", "")
                                             offCarbs = obj.optString("carbs", "")
                                             offProteins = obj.optString("protein", "")
-                                            pasteProvidedWeight.value = weightStr // (see section 5)
 
-                                            // Open AddFoodDialog prefilled; weight defaults to 100 if blank inside AddFoodDialog
+                                            pasteProvidedWeight.value = weightStr
                                             openDialogFromOff = true
-
-                                            // If weight explicitly provided, pass it; otherwise let dialog default logic handle it
-                                            // Store it temporarily by reusing offName slots not necessary; instead just keep a local
-                                            // We'll pass it directly below when showing AddFoodDialog
-                                            // → Save into a temp state:
+                                            true
+                                        } else {
+                                            false
                                         }
                                     } catch (_: Exception) {
-                                        // Not JSON or invalid → do nothing special
-                                    } finally {
-                                        showPasteDialog = false
+                                        false
                                     }
-                                }) { Text("Confirm") }
-                            },
-                            dismissButton = {
-                                Row {
-                                    // Paste from clipboard → into input
-                                    OutlinedButton(onClick = {
-                                        val cm = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
-                                        val text = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
-                                        pasteInput = text.orEmpty()
-                                    }) { Text("Paste") }
-                                    Spacer(Modifier.width(8.dp))
-                                    TextButton(onClick = { showPasteDialog = false }) { Text("Cancel") }
                                 }
-                            },
-                            title = { Text("Paste food JSON") },
-                            text = {
-                                OutlinedTextField(
-                                    value = pasteInput,
-                                    onValueChange = { pasteInput = it },
-                                    label = { Text("Input") },
-                                    placeholder = {
-                                        Text(
-                                            """
-                                                    {
-                                                      "foodName": "Example Food",
-                                                      "weightInGrams": "100",
-                                                      "calories": "120",
-                                                      "fat": "3",
-                                                      "carbs": "15",
-                                                      "protein": "8"
-                                                    }
-                                                                """.trimIndent(),
-                                            color = Color.Gray,
-                                            style = MaterialTheme.typography.bodySmall
-                                        )
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    minLines = 4
+
+                                if (!tryHandleJsonFromClipboard(text)) {
+                                    // Fallback → open the paste dialog normally
+                                    pasteInput = ""
+                                    showPasteDialog = true
+                                }
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentPaste,
+                                    contentDescription = "Paste food JSON",
+                                    tint = Color.White
                                 )
                             }
-                        )
-                    }
 
+                        }
 
-                    // Add Button
-                    Button(onClick = { showDialog = true }) {
-                        Icon(Icons.Default.Add, contentDescription = "Add Food")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Add")
-                    }
-                }
+                        /*// Copy Button
+                        Button(onClick = {
 
-                // Spacer between buttons and totals list
-                Spacer(modifier = Modifier.height(16.dp))
+                        }) {
+                            Icon(Icons.Default.Create, contentDescription = "Clear Totals")
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }*/
 
-                // LazyColumn to display the list of totals
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(vertical = 8.dp) // Add vertical padding between items
-                ) {
-                    items(allTotals, key = { it.id }) { total ->
-                        val isSelected = selectedIds.contains(total.id)
-
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                                .padding(horizontal = 4.dp)
-                                .combinedClickable(
-                                    onClick = {
-                                        if (selectionMode) {
-                                            // toggle selection
-                                            selectedIds = if (isSelected) selectedIds - total.id else selectedIds + total.id
-                                            // if empty after toggle, we’re back to default mode automatically
-                                        } else {
-                                            // default behavior: open edit dialog
-                                            selectedTotal = total
-                                            showDialog = true
+                        // Confirmation Dialog
+                        if (showClearDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showClearDialog = false },
+                                confirmButton = {
+                                    Button(onClick = {
+                                        scope.launch {
+                                            repository.clearTotals()
+                                            totals = repository.getAggregatedTotals() // Refresh totals
+                                            allTotals = repository.getAllTotals()
                                         }
-                                    },
-                                    onLongClick = {
-                                        // enter selection mode (or toggle if already in it)
-                                        selectedIds = if (isSelected && selectedIds.size == 1) {
-                                            // long-press on the only selected item -> unselect -> exit mode
-                                            emptySet()
-                                        } else if (selectionMode) {
-                                            // toggle this one
-                                            if (isSelected) selectedIds - total.id else selectedIds + total.id
-                                        } else {
-                                            // start selection mode with just this item
-                                            setOf(total.id)
-                                        }
+                                        showClearDialog = false // Close the dialog
+                                    }) {
+                                        Text("Yes")
                                     }
-                                ),
-                            shape = MaterialTheme.shapes.small,
-                            elevation = CardDefaults.cardElevation(4.dp),
-                            border = if (isSelected) BorderStroke(2.dp, Color.White) else null
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = "${total.name} ${formatDecimal(total.weight)}g",
-                                        fontSize = 16.sp,
-                                        fontWeight = FontWeight.Bold
+                                },
+                                dismissButton = {
+                                    Button(onClick = { showClearDialog = false }) {
+                                        Text("No")
+                                    }
+                                },
+                                title = { Text("Clear Totals") },
+                                text = { Text("Are you sure you want to clear all totals?") }
+                            )
+                        }
+
+                        if (showPasteDialog) {
+                            AlertDialog(
+                                onDismissRequest = {
+                                    showPasteDialog = false
+                                    pasteInput = ""
+                                },
+                                confirmButton = {
+                                    Button(onClick = {
+                                        // Try to parse JSON; if valid, prefill AddFoodDialog fields
+                                        val text = pasteInput.trim()
+                                        try {
+                                            if (text.startsWith("{") && text.endsWith("}")) {
+                                                val obj = JSONObject(text)
+
+                                                // All optional — only use if provided
+                                                offName = obj.optString("foodName", "")
+                                                val weightStr = obj.optString("weightInGrams", "")
+                                                offCalories = obj.optString("calories", "")
+                                                offFat = obj.optString("fat", "")
+                                                offCarbs = obj.optString("carbs", "")
+                                                offProteins = obj.optString("protein", "")
+                                                pasteProvidedWeight.value = weightStr // (see section 5)
+
+                                                // Open AddFoodDialog prefilled; weight defaults to 100 if blank inside AddFoodDialog
+                                                openDialogFromOff = true
+
+                                                // If weight explicitly provided, pass it; otherwise let dialog default logic handle it
+                                                // Store it temporarily by reusing offName slots not necessary; instead just keep a local
+                                                // We'll pass it directly below when showing AddFoodDialog
+                                                // → Save into a temp state:
+                                            }
+                                        } catch (_: Exception) {
+                                            // Not JSON or invalid → do nothing special
+                                        } finally {
+                                            showPasteDialog = false
+                                        }
+                                    }) { Text("Confirm") }
+                                },
+                                dismissButton = {
+                                    Row {
+                                        // Paste from clipboard → into input
+                                        OutlinedButton(onClick = {
+                                            val cm = (context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
+                                            val text = cm.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
+                                            pasteInput = text.orEmpty()
+                                        }) { Text("Paste") }
+                                        Spacer(Modifier.width(8.dp))
+                                        TextButton(onClick = { showPasteDialog = false }) { Text("Cancel") }
+                                    }
+                                },
+                                title = { Text("Paste food JSON") },
+                                text = {
+                                    OutlinedTextField(
+                                        value = pasteInput,
+                                        onValueChange = { pasteInput = it },
+                                        label = { Text("Input") },
+                                        placeholder = {
+                                            Text(
+                                                """
+                                                        {
+                                                          "foodName": "Example Food",
+                                                          "weightInGrams": "100",
+                                                          "calories": "120",
+                                                          "fat": "3",
+                                                          "carbs": "15",
+                                                          "protein": "8"
+                                                        }
+                                                                    """.trimIndent(),
+                                                color = Color.Gray,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 4
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "${formatDecimal(total.totalProteins)}g protein, " +
-                                            "${formatDecimal(total.totalFat)}g fat, " +
-                                            "${formatDecimal(total.totalCarbs)}g carbs, " +
-                                            "${formatDecimal(total.totalCalories)} kcal",
-                                    fontSize = 14.sp
-                                )
+                            )
+                        }
+
+
+                        // Add Button
+                        Button(onClick = { showDialog = true }) {
+                            Icon(Icons.Default.Add, contentDescription = "Add Food")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Add")
+                        }
+                    }
+
+                    // Spacer between buttons and totals list
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // LazyColumn to display the list of totals
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 8.dp) // Add vertical padding between items
+                    ) {
+                        items(allTotals, key = { it.id }) { total ->
+                            val isSelected = selectedIds.contains(total.id)
+
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .padding(horizontal = 4.dp)
+                                    .combinedClickable(
+                                        onClick = {
+                                            if (selectionMode) {
+                                                // toggle selection
+                                                selectedIds = if (isSelected) selectedIds - total.id else selectedIds + total.id
+                                                // if empty after toggle, we’re back to default mode automatically
+                                            } else {
+                                                // default behavior: open edit dialog
+                                                selectedTotal = total
+                                                showDialog = true
+                                            }
+                                        },
+                                        onLongClick = {
+                                            // enter selection mode (or toggle if already in it)
+                                            selectedIds = if (isSelected && selectedIds.size == 1) {
+                                                // long-press on the only selected item -> unselect -> exit mode
+                                                emptySet()
+                                            } else if (selectionMode) {
+                                                // toggle this one
+                                                if (isSelected) selectedIds - total.id else selectedIds + total.id
+                                            } else {
+                                                // start selection mode with just this item
+                                                setOf(total.id)
+                                            }
+                                        }
+                                    ),
+                                shape = MaterialTheme.shapes.small,
+                                elevation = CardDefaults.cardElevation(4.dp),
+                                border = if (isSelected) BorderStroke(2.dp, Color.White) else null
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(10.dp, 10.dp, 0.dp, 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        // LEFT: your original title + macro text
+                                        Column(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(end = 8.dp)
+                                        ) {
+                                            Text(
+                                                text = "${total.name} ${formatDecimal(total.weight)}g",
+                                                fontSize = 16.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = "${formatDecimal(total.totalProteins)}g protein, " +
+                                                        "${formatDecimal(total.totalFat)}g fat, " +
+                                                        "${formatDecimal(total.totalCarbs)}g carbs, " +
+                                                        "${formatDecimal(total.totalCalories)} kcal",
+                                                fontSize = 14.sp
+                                            )
+                                        }
+
+                                        // RIGHT: checkbox column, centered
+                                        Box(
+                                            modifier = Modifier
+                                                .wrapContentWidth()
+                                                .fillMaxHeight(),      // height from row
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            androidx.compose.material3.Checkbox(
+                                                checked = total.included,
+                                                onCheckedChange = { checked ->
+                                                    scope.launch {
+                                                        repository.setTotalsIncluded(total.id, checked)
+                                                        allTotals = repository.getAllTotalsForDate(currentDate)
+                                                        totals = repository.getAggregatedTotalsForDate(currentDate)
+                                                    }
+                                                }
+                                            )
+                                        }
+                                    }
+
+                                }
+
                             }
                         }
                     }

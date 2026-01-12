@@ -2,7 +2,10 @@ package com.example.floating.caloriecounter.Model
 
 import io.realm.kotlin.Realm
 import io.realm.kotlin.RealmConfiguration
+import io.realm.kotlin.dynamic.DynamicMutableRealmObject
+import io.realm.kotlin.dynamic.DynamicRealmObject
 import io.realm.kotlin.ext.query
+import io.realm.kotlin.migration.AutomaticSchemaMigration
 import io.realm.kotlin.query.RealmResults
 import io.realm.kotlin.query.Sort
 import kotlinx.coroutines.Dispatchers
@@ -10,9 +13,21 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class FoodRepository {
-    private val config = RealmConfiguration.create(
-        schema = setOf(Food::class, Totals::class, WeightEntry::class, ExpectedPlan::class) // Specify models
+
+
+    private val config = RealmConfiguration.Builder(
+        schema = setOf(Food::class, Totals::class, WeightEntry::class, ExpectedPlan::class)
     )
+        .schemaVersion(2) // increment this (start at 1 if you never had one)
+        .migration(
+            AutomaticSchemaMigration { ctx ->
+                ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                    // Existing rows get default "true"
+                    newObj?.set("included", true)
+                }
+            }
+        )
+        .build()
 
     private val realm: Realm = Realm.open(config)
 
@@ -151,6 +166,7 @@ class FoodRepository {
                 this.totalCarbs = carbs
                 //this.timestamp = System.currentTimeMillis() // save timestamp
                 this.timestamp = dateMillis // ← use selected date
+                this.included = true
             })
         }
     }
@@ -227,7 +243,7 @@ class FoodRepository {
 
     fun getAggregatedTotalsForDate(date: java.time.LocalDate): Totals {
         val (start, end) = getDayBounds(date)
-        val totals = realm.query<Totals>("timestamp >= $0 AND timestamp < $1", start, end).find()
+        val totals = realm.query<Totals>("timestamp >= $0 AND timestamp < $1 AND included == true", start, end).find()
         return Totals().apply {
             totalCalories = totals.sumOf { it.totalCalories.toDouble() }.toFloat()
             totalProteins = totals.sumOf { it.totalProteins.toDouble() }.toFloat()
@@ -252,6 +268,7 @@ class FoodRepository {
                         this.totalFat = src.totalFat
                         this.totalCarbs = src.totalCarbs
                         this.timestamp = now // ← copies to "today"
+                        this.included = src.included
                     })
                 }
             }
@@ -310,9 +327,17 @@ class FoodRepository {
         }
     }
 
-
     suspend fun clearExpectedPlan() {
         realm.write { delete(query<ExpectedPlan>()) }
     }
+
+    suspend fun setTotalsIncluded(id: String, included: Boolean) {
+        realm.write {
+            query<Totals>("id == $0", id).first().find()?.let {
+                it.included = included
+            }
+        }
+    }
+
 }
 

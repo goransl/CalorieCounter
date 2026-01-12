@@ -13,6 +13,7 @@ class Totals : RealmObject {
     var totalFat: Float = 0f
     var totalCarbs: Float = 0f
     var timestamp: Long = System.currentTimeMillis()
+    var included: Boolean = true
 
 
     fun copy(
