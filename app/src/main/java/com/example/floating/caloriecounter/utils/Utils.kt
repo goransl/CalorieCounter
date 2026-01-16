@@ -35,6 +35,8 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
                 put("fat_per_100g", f.fat)
                 put("carbs_per_100g", f.carbs)
                 put("lastUsed", f.lastUsed)
+                put("price", f.price)
+                put("priceGrams", f.priceGrams)
             })
         }
         foodJson.writeText(arr.toString(2))
@@ -53,6 +55,7 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
                 put("totalFat", t.totalFat)
                 put("totalCarbs", t.totalCarbs)
                 put("timestamp", t.timestamp)
+                put("cost", t.cost)
             })
         }
         totalsJson.writeText(arr.toString(2))

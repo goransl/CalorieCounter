@@ -18,13 +18,18 @@ class FoodRepository {
     private val config = RealmConfiguration.Builder(
         schema = setOf(Food::class, Totals::class, WeightEntry::class, ExpectedPlan::class)
     )
-        .schemaVersion(2) // increment this (start at 1 if you never had one)
+        .schemaVersion(4) // increment this (start at 1 if you never had one)
         .migration(
             AutomaticSchemaMigration { ctx ->
                 ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
                     // Existing rows get default "true"
-                    newObj?.set("included", true)
+                    newObj?.set("totalCost", 0f) // ✅ NEW
                 }
+
+                /*ctx.enumerate(className = "Food") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                    newObj?.set("price", 0f)
+                    newObj?.set("priceGrams", 0f)
+                }*/
             }
         )
         .build()
@@ -112,6 +117,8 @@ class FoodRepository {
                     fat = newFood.fat
                     carbs = newFood.carbs
                     lastUsed = System.currentTimeMillis() // mark as used on update
+                    price = newFood.price
+                    priceGrams = newFood.priceGrams
                 }
             }
         }
@@ -130,6 +137,8 @@ class FoodRepository {
                     this.fat = food.fat
                     this.carbs = food.carbs
                     this.lastUsed = System.currentTimeMillis() // mark as used
+                    this.price = food.price
+                    this.priceGrams = food.priceGrams
                 }
             } else {
                 copyToRealm(food)
@@ -154,7 +163,7 @@ class FoodRepository {
     }
 
     // Save calculated totals to the Totals table
-    suspend fun saveToTotals(name: String, calories: Float, proteins: Float, fat: Float, carbs: Float, weight: Float, dateMillis: Long) {
+    suspend fun saveToTotals(name: String, calories: Float, proteins: Float, fat: Float, carbs: Float, weight: Float, dateMillis: Long, cost: Float = 0f) {
         realm.write {
             copyToRealm(Totals().apply {
                 this.id = UUID.randomUUID().toString() // Generate a unique ID
@@ -167,6 +176,7 @@ class FoodRepository {
                 //this.timestamp = System.currentTimeMillis() // save timestamp
                 this.timestamp = dateMillis // ← use selected date
                 this.included = true
+                this.cost = cost
             })
         }
     }
@@ -219,6 +229,7 @@ class FoodRepository {
                 existingTotal.totalProteins = updatedTotal.totalProteins
                 existingTotal.totalFat = updatedTotal.totalFat
                 existingTotal.totalCarbs = updatedTotal.totalCarbs
+                existingTotal.cost = updatedTotal.cost
             }
         }
     }
@@ -249,6 +260,7 @@ class FoodRepository {
             totalProteins = totals.sumOf { it.totalProteins.toDouble() }.toFloat()
             totalFat = totals.sumOf { it.totalFat.toDouble() }.toFloat()
             totalCarbs = totals.sumOf { it.totalCarbs.toDouble() }.toFloat()
+            totalCost     = totals.sumOf { it.cost.toDouble() }.toFloat()
         }
     }
 
@@ -269,6 +281,7 @@ class FoodRepository {
                         this.totalCarbs = src.totalCarbs
                         this.timestamp = now // ← copies to "today"
                         this.included = src.included
+                        this.cost = src.cost          // ✅ NEW: includes price-derived value
                     })
                 }
             }

@@ -108,6 +108,7 @@ import org.json.JSONObject
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToInt
 
 
 data class OffNutrition(
@@ -368,11 +369,12 @@ fun CalorieCounterApp(repository: FoodRepository = FoodRepository()) {
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Calories: ${formatDecimal(totals.totalCalories)}", fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                    Text("Calories: ${formatDecimal(totals.totalCalories)}", fontSize = 30.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("Proteins: ${formatDecimal(totals.totalProteins)}g", fontSize = 24.sp)
-                    Text("Fat: ${formatDecimal(totals.totalFat)}g", fontSize = 24.sp)
-                    Text("Carbs: ${formatDecimal(totals.totalCarbs)}g", fontSize = 24.sp)
+                    Text("Proteins: ${formatDecimal(totals.totalProteins)}g", fontSize = 23.sp)
+                    Text("Fat: ${formatDecimal(totals.totalFat)}g", fontSize = 23.sp)
+                    Text("Carbs: ${formatDecimal(totals.totalCarbs)}g", fontSize = 23.sp)
+                    Text("Cost: ${formatMoney2(totals.totalCost)}€", fontSize = 23.sp)
 
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -650,11 +652,12 @@ fun CalorieCounterApp(repository: FoodRepository = FoodRepository()) {
                                                 fontWeight = FontWeight.Bold
                                             )
                                             Spacer(modifier = Modifier.height(2.dp))
+                                            val costText = if (total.cost > 0f) " • ${formatMoney2(total.cost)}€" else ""
                                             Text(
                                                 text = "${formatDecimal(total.totalProteins)}g protein, " +
                                                         "${formatDecimal(total.totalFat)}g fat, " +
                                                         "${formatDecimal(total.totalCarbs)}g carbs, " +
-                                                        "${formatDecimal(total.totalCalories)} kcal",
+                                                        "${formatDecimal(total.totalCalories)} kcal$costText",
                                                 fontSize = 14.sp
                                             )
                                         }
@@ -759,22 +762,24 @@ fun DecimalOnlyTextField(
     onValueChange: (String) -> Unit,
     label: @Composable () -> Unit,
     focusRequester: FocusRequester,
-    onNext: () -> Unit
+    onNext: () -> Unit,
+    modifier: Modifier = Modifier,
+    imeAction: ImeAction = ImeAction.Next,
+    singleLine: Boolean = true
 ) {
     TextField(
         value = value,
         onValueChange = { input ->
-            // Updated regex: allows numbers with an optional leading zero and decimal point
             if (input.isBlank() || input.matches(Regex("^\\d*(\\.\\d*)?\$"))) {
                 onValueChange(input)
             }
         },
         label = label,
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusRequester(focusRequester),
+        modifier = modifier
+            .focusRequester(focusRequester), // ✅ use passed modifier
+        singleLine = singleLine,
         keyboardOptions = KeyboardOptions.Default.copy(
-            imeAction = ImeAction.Next,
+            imeAction = imeAction,
             keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
         ),
         keyboardActions = KeyboardActions(onNext = { onNext() })
@@ -811,6 +816,14 @@ fun EditTotalDialog(
 
                 CoroutineScope(Dispatchers.IO).launch {
                     val associatedFoods = repository.getAllFoods().filter { it.name == total.name }
+
+                    val food = repository.getFoodByName(total.name)
+                    val newCost =
+                        if (food != null && food.price > 0f && food.priceGrams > 0f) {
+                            round2((food.price / food.priceGrams) * updatedWeight)
+                        } else 0f
+
+
                     val recalculatedTotals = Totals().apply {
                         id = total.id
                         name = total.name // Prevent name editing
@@ -819,6 +832,7 @@ fun EditTotalDialog(
                         totalFat = associatedFoods.map { it.fat * (this.weight / 100f) }.sum()
                         totalCarbs = associatedFoods.map { it.carbs * (this.weight / 100f) }.sum()
                         totalCalories = associatedFoods.map { it.calories * (this.weight / 100f) }.sum()
+                        cost = newCost
                     }
 
                     onUpdate(recalculatedTotals)
@@ -877,7 +891,6 @@ fun AddFoodDialog(
     val focusSink = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
-
     val weightFocusRequester = FocusRequester()
     val caloriesFocusRequester = FocusRequester()
     val proteinsFocusRequester = FocusRequester()
@@ -890,6 +903,9 @@ fun AddFoodDialog(
     var proteins by remember { mutableStateOf(initialProteins) }
     var fat by remember { mutableStateOf(initialFat) }
     var carbs by remember { mutableStateOf(initialCarbs) }
+    var price by remember { mutableStateOf("") }
+    var priceGrams by remember { mutableStateOf("1000") } // default
+
 
     var showSuggestions by remember { mutableStateOf(false) }
     var refreshTrigger by remember { mutableStateOf(0) }
@@ -906,7 +922,6 @@ fun AddFoodDialog(
             Button(onClick = {
                 val weightValue = weight.toFloatOrNull() ?: 0f
 
-
                 val caloriesValue = (calories.toFloatOrNull() ?: 0f)
                 val proteinsValue = (proteins.toFloatOrNull() ?: 0f)
                 val fatValue = (fat.toFloatOrNull() ?: 0f)
@@ -917,6 +932,16 @@ fun AddFoodDialog(
                 val fatValueCalc = fatValue * weightValue / 100
                 val carbsValueCalc = carbsValue * weightValue / 100
 
+                val priceValueRaw = price.toFloatOrNull()
+                val priceGramsValue = priceGrams.toFloatOrNull()
+
+                val priceValue = priceValueRaw?.let { round2(it) }  // ✅ round to 2 decimals
+
+                val costValue: Float =
+                    if (priceValue != null && priceGramsValue != null && priceGramsValue > 0f) {
+                        round2((priceValue / priceGramsValue) * weightValue)   // ✅ cost also 2 decimals
+                    } else 0f
+
                 val food = Food().apply {
                     id = name
                     this.name = name
@@ -925,6 +950,8 @@ fun AddFoodDialog(
                     this.proteins = proteinsValue
                     this.fat = fatValue
                     this.carbs = carbsValue
+                    this.price = priceValue ?: 0f
+                    this.priceGrams = priceGramsValue ?: 0f
                 }
 
                 CoroutineScope(Dispatchers.IO).launch {
@@ -944,7 +971,7 @@ fun AddFoodDialog(
                         .toInstant()
                         .toEpochMilli()
 
-                    repository.saveToTotals(name, caloriesValueCalc, proteinsValueCalc, fatValueCalc, carbsValueCalc, weightValue, dateMillis)
+                    repository.saveToTotals(name, caloriesValueCalc, proteinsValueCalc, fatValueCalc, carbsValueCalc, weightValue, dateMillis, cost = costValue)
 
                     // Update totals after saving food
                     onTotalsUpdated()
@@ -1012,6 +1039,9 @@ fun AddFoodDialog(
                                                     proteins = formatDecimal(existingFood.proteins)
                                                     fat = formatDecimal(existingFood.fat)
                                                     carbs = formatDecimal(existingFood.carbs)
+                                                    price = if (existingFood.price > 0f) formatMoney2(existingFood.price) else ""
+                                                    priceGrams = if (existingFood.priceGrams > 0f) formatDecimal(existingFood.priceGrams) else "1000"
+
                                                 }
 
                                                 // 👇 FIX: move focus away, then hide IME
@@ -1096,6 +1126,32 @@ fun AddFoodDialog(
                     focusRequester = proteinsFocusRequester,
                     onNext = { focusManager.clearFocus() } // Hide keyboard
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DecimalOnlyTextField(
+                        value = price,
+                        onValueChange = { price = it },
+                        label = { Text("Price") },
+                        focusRequester = remember { FocusRequester() },
+                        onNext = { /* optional */ },
+                        modifier = Modifier.weight(1f)       // ✅ IMPORTANT
+                    )
+
+                    DecimalOnlyTextField(
+                        value = priceGrams,
+                        onValueChange = { priceGrams = it },
+                        label = { Text("Grams") },
+                        focusRequester = remember { FocusRequester() },
+                        onNext = { /* optional */ },
+                        modifier = Modifier.weight(1f),      // ✅ IMPORTANT
+                        imeAction = ImeAction.Done
+                    )
+                }
             }
         }
     )
@@ -1108,6 +1164,23 @@ fun formatDecimal(value: Float): String {
         value.toInt().toString() // Convert to an integer string if .0
     }
 }
+
+fun formatMoney(value: Float): String {
+    return if (value % 1f == 0f) {
+        value.toInt().toString()
+    } else {
+        String.format(Locale.US, "%.2f", value)
+    }
+}
+
+fun round2(value: Float): Float = (value * 100f).roundToInt() / 100f
+
+fun formatMoney2(value: Float): String =
+    String.format(Locale.US, "%.2f", value)     // always 2 decimals (7.99, 8.00)
+
+fun formatMoney2Trim(value: Float): String =
+    if (value % 1f == 0f) value.toInt().toString() else formatMoney2(value) // optional
+
 
 
 

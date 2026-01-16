@@ -14,4 +14,6 @@ class Food : RealmObject {
     var fat: Float = 0f
     var carbs: Float = 0f
     var lastUsed: Long = 0L
+    var price: Float = 0f
+    var priceGrams: Float = 0f
 }
