@@ -2,7 +2,6 @@ package com.example.floating.caloriecounter
 
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -49,6 +48,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Fastfood
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Scale
 import androidx.compose.material3.AlertDialog
@@ -59,6 +59,9 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -71,6 +74,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -166,19 +170,71 @@ class MainActivity : ComponentActivity() {
                 window.statusBarColor = Color(0xFF121212).toArgb() // Match dark background color
                 WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = false
 
-                val ctx = this
                 // Wrap the whole app surface
                 Box(modifier = Modifier.fillMaxSize()) {
-                    CalorieCounterApp()
+                    MainScreen()
                 }
             }
         }
     }
 }
 
+private enum class MainTab(val label: String) {
+    Calories("Calories"),
+    Weight("Weight")
+}
+
+@Composable
+fun MainScreen(repository: FoodRepository = FoodRepository()) {
+    var selectedTab by rememberSaveable { mutableStateOf(MainTab.Calories) }
+    val navItemColors = NavigationBarItemDefaults.colors(
+        selectedIconColor = MaterialTheme.colorScheme.onPrimary,
+        selectedTextColor = MaterialTheme.colorScheme.primary,
+        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        indicatorColor = MaterialTheme.colorScheme.primary
+    )
+
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == MainTab.Calories,
+                    onClick = { selectedTab = MainTab.Calories },
+                    icon = { Icon(Icons.Default.Fastfood, contentDescription = "Calories") },
+                    label = { Text("Calories") },
+                    colors = navItemColors
+                )
+                NavigationBarItem(
+                    selected = selectedTab == MainTab.Weight,
+                    onClick = { selectedTab = MainTab.Weight },
+                    icon = { Icon(Icons.Default.Scale, contentDescription = "Weight") },
+                    label = { Text("Weight") },
+                    colors = navItemColors
+                )
+            }
+        }
+    ) { padding ->
+        when (selectedTab) {
+            MainTab.Calories -> CalorieCounterApp(
+                repository = repository,
+                contentPadding = padding
+            )
+            MainTab.Weight -> WeightTableScreen(
+                repository = repository,
+                showBack = false,
+                contentPadding = padding
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun CalorieCounterApp(repository: FoodRepository = FoodRepository()) {
+fun CalorieCounterApp(
+    repository: FoodRepository = FoodRepository(),
+    contentPadding: PaddingValues = PaddingValues(0.dp)
+) {
     val scope = rememberCoroutineScope()
     var totals by remember { mutableStateOf(Totals()) }
     var showDialog by remember { mutableStateOf(false) }
@@ -292,6 +348,7 @@ fun CalorieCounterApp(repository: FoodRepository = FoodRepository()) {
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .padding(bottom = contentPadding.calculateBottomPadding())
             .swipeToNavigate(
                 onSwipeLeft = { currentDate = currentDate.plusDays(1) },
                 onSwipeRight = { currentDate = currentDate.minusDays(1) }
@@ -405,13 +462,6 @@ fun CalorieCounterApp(repository: FoodRepository = FoodRepository()) {
                             }) {
                                 // You can use Archive or FileDownload—pick your favorite icon
                                 Icon(imageVector = Icons.Default.Archive, contentDescription = "Export backup", tint = Color.White)
-                            }
-                            IconButton(onClick = { context.startActivity(Intent(context, WeightActivity::class.java)) }) {
-                                Icon(
-                                    imageVector = Icons.Default.Scale,
-                                    contentDescription = "Weight",
-                                    tint = Color.White
-                                )
                             }
                             /*IconButton(onClick = {
                                 pasteInput = ""

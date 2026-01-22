@@ -63,7 +63,11 @@ class WeightActivity : ComponentActivity() {
                             }
                         )
                 ) {
-                    WeightTableScreen(repository = FoodRepository())
+                    WeightTableScreen(
+                        repository = FoodRepository(),
+                        showBack = true,
+                        onBack = { (ctx as Activity).finish() }
+                    )
                 }
             }
         }
@@ -72,7 +76,12 @@ class WeightActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WeightTableScreen(repository: FoodRepository) {
+fun WeightTableScreen(
+    repository: FoodRepository,
+    showBack: Boolean = true,
+    onBack: (() -> Unit)? = null,
+    contentPadding: PaddingValues = PaddingValues(0.dp)
+) {
     val scope = rememberCoroutineScope()
     var weights by remember { mutableStateOf(emptyList<WeightEntry>()) }
     var plan by remember { mutableStateOf<ExpectedPlan?>(null) }
@@ -109,8 +118,10 @@ fun WeightTableScreen(repository: FoodRepository) {
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    IconButton(onClick = { (context as? Activity)?.finish() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                    if (showBack) {
+                        IconButton(onClick = { onBack?.invoke() }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                        }
                     }
                 },
                 title = { Text("Weight tracking", color = Color.White) },
@@ -125,6 +136,7 @@ fun WeightTableScreen(repository: FoodRepository) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .padding(bottom = contentPadding.calculateBottomPadding())
         ) {
             // Header row: 3 columns
             Row(
