@@ -78,6 +78,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -90,6 +91,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.example.floating.caloriecounter.Model.Food
@@ -215,16 +217,31 @@ fun MainScreen(repository: FoodRepository = FoodRepository()) {
             }
         }
     ) { padding ->
-        when (selectedTab) {
-            MainTab.Calories -> CalorieCounterApp(
-                repository = repository,
-                contentPadding = padding
-            )
-            MainTab.Weight -> WeightTableScreen(
-                repository = repository,
-                showBack = false,
-                contentPadding = padding
-            )
+        val showCalories = selectedTab == MainTab.Calories
+        Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(if (showCalories) 1f else 0f)
+                    .zIndex(if (showCalories) 1f else 0f)
+            ) {
+                CalorieCounterApp(
+                    repository = repository,
+                    contentPadding = padding
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(if (showCalories) 0f else 1f)
+                    .zIndex(if (showCalories) 0f else 1f)
+            ) {
+                WeightTableScreen(
+                    repository = repository,
+                    showBack = false,
+                    contentPadding = padding
+                )
+            }
         }
     }
 }
