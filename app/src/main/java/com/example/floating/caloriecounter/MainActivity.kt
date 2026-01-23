@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fastfood
+import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Scale
 import androidx.compose.material3.AlertDialog
@@ -183,7 +184,8 @@ class MainActivity : ComponentActivity() {
 
 private enum class MainTab(val label: String) {
     Calories("Calories"),
-    Weight("Weight")
+    Weight("Weight"),
+    Workout("Workout")
 }
 
 @Composable
@@ -214,10 +216,19 @@ fun MainScreen(repository: FoodRepository = FoodRepository()) {
                     label = { Text("Weight") },
                     colors = navItemColors
                 )
+                NavigationBarItem(
+                    selected = selectedTab == MainTab.Workout,
+                    onClick = { selectedTab = MainTab.Workout },
+                    icon = { Icon(Icons.Default.FitnessCenter, contentDescription = "Workout") },
+                    label = { Text("Workout") },
+                    colors = navItemColors
+                )
             }
         }
     ) { padding ->
         val showCalories = selectedTab == MainTab.Calories
+        val showWeight = selectedTab == MainTab.Weight
+        val showWorkout = selectedTab == MainTab.Workout
         Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
@@ -233,12 +244,23 @@ fun MainScreen(repository: FoodRepository = FoodRepository()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .alpha(if (showCalories) 0f else 1f)
-                    .zIndex(if (showCalories) 0f else 1f)
+                    .alpha(if (showWeight) 1f else 0f)
+                    .zIndex(if (showWeight) 1f else 0f)
             ) {
                 WeightTableScreen(
                     repository = repository,
                     showBack = false,
+                    contentPadding = padding
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(if (showWorkout) 1f else 0f)
+                    .zIndex(if (showWorkout) 1f else 0f)
+            ) {
+                WorkoutScreen(
+                    repository = repository,
                     contentPadding = padding
                 )
             }

@@ -16,9 +16,17 @@ class FoodRepository {
 
 
     private val config = RealmConfiguration.Builder(
-        schema = setOf(Food::class, Totals::class, WeightEntry::class, ExpectedPlan::class)
+        schema = setOf(
+            Food::class,
+            Totals::class,
+            WeightEntry::class,
+            ExpectedPlan::class,
+            WorkoutEntry::class,
+            WorkoutSet::class,
+            WorkoutName::class
+        )
     )
-        .schemaVersion(4) // increment this (start at 1 if you never had one)
+        .schemaVersion(6) // increment this (start at 1 if you never had one)
         .migration(
             AutomaticSchemaMigration { ctx ->
                 ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
@@ -349,6 +357,120 @@ class FoodRepository {
             query<Totals>("id == $0", id).first().find()?.let {
                 it.included = included
             }
+        }
+    }
+
+    // --- Workout tracking API ---
+    suspend fun saveWorkoutEntry(
+        name: String,
+        dateMillis: Long,
+        notes: String,
+        sets: List<Triple<Float, Int, String>>
+    ) {
+        realm.write {
+            val entry = WorkoutEntry().apply {
+                this.name = name
+                this.dateMillis = dateMillis
+                this.notes = notes
+                this.updatedAt = System.currentTimeMillis()
+                sets.forEach { (weightKg, reps, rest) ->
+                    this.sets.add(WorkoutSet().apply {
+                        this.weightKg = weightKg
+                        this.reps = reps
+                        this.rest = rest
+                    })
+                }
+            }
+            copyToRealm(entry)
+        }
+        touchWorkoutName(name)
+    }
+
+    suspend fun updateWorkoutEntry(
+        id: String,
+        name: String,
+        dateMillis: Long,
+        notes: String,
+        sets: List<Triple<Float, Int, String>>
+    ) {
+        realm.write {
+            val existing = query<WorkoutEntry>("id == $0", id).first().find()
+            if (existing != null) {
+                existing.name = name
+                existing.dateMillis = dateMillis
+                existing.notes = notes
+                existing.updatedAt = System.currentTimeMillis()
+                existing.sets.clear()
+                sets.forEach { (weightKg, reps, rest) ->
+                    existing.sets.add(WorkoutSet().apply {
+                        this.weightKg = weightKg
+                        this.reps = reps
+                        this.rest = rest
+                    })
+                }
+            }
+        }
+        touchWorkoutName(name)
+    }
+
+    suspend fun deleteWorkoutEntry(id: String) {
+        realm.write {
+            query<WorkoutEntry>("id == $0", id).first().find()?.let { delete(it) }
+        }
+    }
+
+    fun getWorkoutEntriesNewestFirst(searchQuery: String): List<WorkoutEntry> {
+        val trimmed = searchQuery.trim()
+        val results = if (trimmed.isEmpty()) {
+            realm.query<WorkoutEntry>()
+        } else {
+            val words = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            var q = realm.query<WorkoutEntry>("name CONTAINS[c] $0", words.first())
+            words.drop(1).forEach { w ->
+                q = q.query("name CONTAINS[c] $0", w)
+            }
+            q
+        }
+        return results.sort("dateMillis", Sort.DESCENDING).find()
+    }
+
+    fun getWorkoutNameSuggestions(query: String): List<String> {
+        val words = query.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return emptyList()
+
+        var q = realm.query<WorkoutName>("name CONTAINS[c] $0", words.first())
+        words.drop(1).forEach { w ->
+            q = q.query("name CONTAINS[c] $0", w)
+        }
+
+        return q.sort("lastUsed", Sort.DESCENDING)
+            .find()
+            .map { it.name }
+            .distinct()
+            .take(20)
+    }
+
+    suspend fun touchWorkoutName(name: String) {
+        val trimmed = name.trimEnd()
+        if (trimmed.isEmpty()) return
+        realm.write {
+            val existing = query<WorkoutName>("name == $0", trimmed).first().find()
+            if (existing != null) {
+                existing.lastUsed = System.currentTimeMillis()
+            } else {
+                copyToRealm(WorkoutName().apply {
+                    this.name = trimmed
+                    this.lastUsed = System.currentTimeMillis()
+                })
+            }
+        }
+    }
+
+    suspend fun deleteWorkoutName(name: String) {
+        val trimmed = name.trimEnd()
+        if (trimmed.isEmpty()) return
+        realm.write {
+            query<WorkoutName>("name == $0", trimmed).first().find()?.let { delete(it) }
         }
     }
 
