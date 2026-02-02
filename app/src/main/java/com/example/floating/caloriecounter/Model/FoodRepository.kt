@@ -13,8 +13,6 @@ import kotlinx.coroutines.withContext
 import java.util.UUID
 
 class FoodRepository {
-
-
     private val config = RealmConfiguration.Builder(
         schema = setOf(
             Food::class,
@@ -67,6 +65,13 @@ class FoodRepository {
         realm.query<WeightEntry>().sort("timestamp", Sort.ASCENDING).find()
     }
 
+    suspend fun getAllWorkoutEntriesForBackup(): List<WorkoutEntry> = withContext(Dispatchers.IO) {
+        realm.query<WorkoutEntry>().sort("dateMillis", Sort.ASCENDING).find()
+    }
+
+    suspend fun getAllWorkoutNamesForBackup(): List<WorkoutName> = withContext(Dispatchers.IO) {
+        realm.query<WorkoutName>().sort("lastUsed", Sort.ASCENDING).find()
+    }
 
     // touch food usage time (call when user selects/saves a food)
     suspend fun touchFood(name: String) {

@@ -14,6 +14,8 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
     val totalsAll    = repository.getAllTotalsAllDates()        // List<Totals>
     val plan         = repository.getExpectedPlanSingleton()    // ExpectedPlan?
     val weightLog    = repository.getAllWeightEntries()         // List<WeightEntry>
+    val workoutEntries = repository.getAllWorkoutEntriesForBackup() // List<WorkoutEntry>
+    val workoutNames   = repository.getAllWorkoutNamesForBackup()   // List<WorkoutName>
 
     // 2) Build JSON files in cache
     val workDir = File(context.cacheDir, "cc_backup_tmp").apply { mkdirs() }
@@ -21,6 +23,10 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
     val totalsJson = File(workDir, "totals.json")
     val planJson = File(workDir, "expected_plan.json")
     val weightsJson = File(workDir, "weights.json")
+    val workoutEntriesJson = File(workDir, "workout_entries.json")
+    val workoutNamesJson   = File(workDir, "workout_names.json")
+
+
 
     // Foods
     run {
@@ -86,6 +92,43 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
         weightsJson.writeText(arr.toString(2))
     }
 
+    // WorkoutEntries (with embedded sets)
+    run {
+        val arr = JSONArray()
+        workoutEntries.forEach { e ->
+            val setsArr = JSONArray()
+            e.sets.forEach { s ->
+                setsArr.put(JSONObject().apply {
+                    put("weightKg", s.weightKg)
+                    put("reps", s.reps)
+                    put("rest", s.rest)
+                })
+            }
+
+            arr.put(JSONObject().apply {
+                put("id", e.id)
+                put("name", e.name)
+                put("dateMillis", e.dateMillis)
+                put("notes", e.notes)
+                put("updatedAt", e.updatedAt)
+                put("sets", setsArr)
+            })
+        }
+        workoutEntriesJson.writeText(arr.toString(2))
+    }
+
+    // WorkoutNames
+    run {
+        val arr = JSONArray()
+        workoutNames.forEach { w ->
+            arr.put(JSONObject().apply {
+                put("name", w.name)
+                put("lastUsed", w.lastUsed)
+            })
+        }
+        workoutNamesJson.writeText(arr.toString(2))
+    }
+
     // 3) Zip them
     val outZip = File(context.cacheDir, "CalorieCounter_Backup_${System.currentTimeMillis()}.zip")
     ZipOutputStream(outZip.outputStream()).use { zos ->
@@ -98,6 +141,8 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
         addFile(totalsJson)
         addFile(planJson)
         addFile(weightsJson)
+        addFile(workoutEntriesJson)
+        addFile(workoutNamesJson)
     }
 
     // Optional: clean temp JSONs
@@ -106,6 +151,8 @@ suspend fun createBackupZip(context: Context, repository: FoodRepository): File 
     planJson.delete()
     weightsJson.delete()
     workDir.delete()
+    workoutEntriesJson.delete()
+    workoutNamesJson.delete()
 
     outZip
 }
