@@ -1,5 +1,10 @@
 package com.example.floating.caloriecounter.Model
 
+import com.example.floating.caloriecounter.backup.BackupData
+import com.example.floating.caloriecounter.backup.TotalsBackup
+import com.example.floating.caloriecounter.backup.WeightEntryBackup
+import com.example.floating.caloriecounter.backup.WorkoutEntryBackup
+import com.example.floating.caloriecounter.backup.WorkoutNameBackup
 import io.realm.kotlin.Realm
 import io.realm.kotlin.RealmConfiguration
 import io.realm.kotlin.dynamic.DynamicMutableRealmObject
@@ -8,11 +13,9 @@ import io.realm.kotlin.ext.query
 import io.realm.kotlin.migration.AutomaticSchemaMigration
 import io.realm.kotlin.query.RealmResults
 import io.realm.kotlin.query.Sort
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.util.UUID
 
-class FoodRepository {
+class FoodRepository : AutoCloseable {
     private val config = RealmConfiguration.Builder(
         schema = setOf(
             Food::class,
@@ -28,8 +31,7 @@ class FoodRepository {
         .migration(
             AutomaticSchemaMigration { ctx ->
                 ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
-                    // Existing rows get default "true"
-                    newObj?.set("totalCost", 0f) // ✅ NEW
+                    newObj?.set("totalCost", 0f)
                 }
 
                 /*ctx.enumerate(className = "Food") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
@@ -42,35 +44,65 @@ class FoodRepository {
 
     private val realm: Realm = Realm.open(config)
 
-    // Provide realm instance for later use
-    fun getRealm(): Realm = realm
-
     fun getAllFoods(): RealmResults<Food> = realm.query<Food>().find()
 
-
-    suspend fun getAllFoodsForBackup(): List<Food> = withContext(Dispatchers.IO) {
-        realm.query<Food>().find()
+    /**
+     * Reads every table while holding one Realm transaction and immediately detaches it into
+     * serializable values. This prevents live Realm objects or different database versions from
+     * leaking into the archive writer.
+     */
+    suspend fun createBackupData(): BackupData = realm.write {
+        BackupData(
+            foods = query<Food>().find().map(Food::toBackupModel).sortedBy { it.id },
+            totals = query<Totals>().find().map(Totals::toBackupModel)
+                .sortedWith(compareBy<TotalsBackup> { it.timestamp }.thenBy { it.id }),
+            expectedPlan = query<ExpectedPlan>("id == $0", "expected_plan_singleton")
+                .first()
+                .find()
+                ?.toBackupModel(),
+            weights = query<WeightEntry>().find().map(WeightEntry::toBackupModel)
+                .sortedWith(compareBy<WeightEntryBackup> { it.timestamp }.thenBy { it.id }),
+            workoutEntries = query<WorkoutEntry>().find().map(WorkoutEntry::toBackupModel)
+                .sortedWith(compareBy<WorkoutEntryBackup> { it.dateMillis }.thenBy { it.id }),
+            workoutNames = query<WorkoutName>().find().map(WorkoutName::toBackupModel)
+                .sortedWith(compareBy<WorkoutNameBackup> { it.lastUsed }.thenBy { it.name })
+        )
     }
 
-    suspend fun getAllTotalsAllDates(): List<Totals> = withContext(Dispatchers.IO) {
-        // If you want stable ordering in the export:
-        realm.query<Totals>().sort("timestamp", Sort.ASCENDING).find()
+    /** Replaces all app data atomically after the archive has been decoded and validated. */
+    suspend fun restoreBackup(data: BackupData) {
+        realm.write {
+            // Delete owners before embedded WorkoutSet objects.
+            delete(query<WorkoutEntry>())
+            delete(query<WorkoutName>())
+            delete(query<ExpectedPlan>())
+            delete(query<WeightEntry>())
+            delete(query<Totals>())
+            delete(query<Food>())
+
+            data.foods.forEach { food ->
+                copyToRealm(food.toRealmModel())
+            }
+            data.totals.forEach { total ->
+                copyToRealm(total.toRealmModel())
+            }
+            data.expectedPlan?.let { plan ->
+                copyToRealm(plan.toRealmModel())
+            }
+            data.weights.forEach { weight ->
+                copyToRealm(weight.toRealmModel())
+            }
+            data.workoutEntries.forEach { workout ->
+                copyToRealm(workout.toRealmModel())
+            }
+            data.workoutNames.forEach { workoutName ->
+                copyToRealm(workoutName.toRealmModel())
+            }
+        }
     }
 
-    suspend fun getExpectedPlanSingleton(): ExpectedPlan? = withContext(Dispatchers.IO) {
-        realm.query<ExpectedPlan>("id == $0", "expected_plan_singleton").first().find()
-    }
-
-    suspend fun getAllWeightEntries(): List<WeightEntry> = withContext(Dispatchers.IO) {
-        realm.query<WeightEntry>().sort("timestamp", Sort.ASCENDING).find()
-    }
-
-    suspend fun getAllWorkoutEntriesForBackup(): List<WorkoutEntry> = withContext(Dispatchers.IO) {
-        realm.query<WorkoutEntry>().sort("dateMillis", Sort.ASCENDING).find()
-    }
-
-    suspend fun getAllWorkoutNamesForBackup(): List<WorkoutName> = withContext(Dispatchers.IO) {
-        realm.query<WorkoutName>().sort("lastUsed", Sort.ASCENDING).find()
+    override fun close() {
+        realm.close()
     }
 
     // touch food usage time (call when user selects/saves a food)

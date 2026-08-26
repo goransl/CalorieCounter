@@ -42,8 +42,11 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
 class WeightActivity : ComponentActivity() {
+    private lateinit var repository: FoodRepository
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        repository = FoodRepository()
 
         // Match status bar to dark background, same as MainActivity
         WindowCompat.setDecorFitsSystemWindows(window, false)
@@ -64,13 +67,18 @@ class WeightActivity : ComponentActivity() {
                         )
                 ) {
                     WeightTableScreen(
-                        repository = FoodRepository(),
+                        repository = repository,
                         showBack = true,
                         onBack = { (ctx as Activity).finish() }
                     )
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        repository.close()
     }
 }
 
@@ -80,7 +88,8 @@ fun WeightTableScreen(
     repository: FoodRepository,
     showBack: Boolean = true,
     onBack: (() -> Unit)? = null,
-    contentPadding: PaddingValues = PaddingValues(0.dp)
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    dataRevision: Int = 0
 ) {
     val scope = rememberCoroutineScope()
     var weights by remember { mutableStateOf(emptyList<WeightEntry>()) }
@@ -90,7 +99,7 @@ fun WeightTableScreen(
     var showExpectedDialogForDate by remember { mutableStateOf<LocalDate?>(null) }
 
     // Load data
-    LaunchedEffect(Unit) {
+    LaunchedEffect(dataRevision) {
         weights = repository.getAllWeightsAscending()
         plan = repository.getExpectedPlan()
     }

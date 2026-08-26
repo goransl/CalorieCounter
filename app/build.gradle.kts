@@ -4,6 +4,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
+    alias(libs.plugins.jetbrains.kotlin.serialization)
     // NOTE: No kotlin compose plugin on Kotlin 1.9.x
     id("io.realm.kotlin") version "1.10.1"
 }
@@ -43,7 +44,10 @@ android {
         jvmTarget = "17"
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     // On Kotlin 1.9.x you must pin the Compose compiler extension
     composeOptions {
@@ -88,6 +92,7 @@ dependencies {
 
     // Tests
     testImplementation(libs.junit)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.ui.test.junit4)
@@ -95,13 +100,14 @@ dependencies {
 
     // Realm
     implementation(libs.library.base)
+    implementation(libs.kotlinx.serialization.json)
 
     // Icons (BOM supplies version)
-    implementation("androidx.compose.material:material-icons-extended")
+    implementation(libs.androidx.material.icons.extended)
 
     // Other libs
-    implementation("androidx.activity:activity-ktx:1.9.3")
-    implementation("com.google.mlkit:barcode-scanning:17.2.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation(libs.androidx.activity.ktx)
+    implementation(libs.mlkit.barcode.scanning)
+    implementation(libs.kotlinx.coroutines.play.services)
+    implementation(libs.okhttp)
 }

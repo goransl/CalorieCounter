@@ -16,24 +16,4 @@ class Totals : RealmObject {
     var included: Boolean = true
     var cost: Float = 0f
     var totalCost: Float = 0f
-
-    fun copy(
-        id: String = this.id,
-        name: String = this.name,
-        weight: Float = this.weight,
-        totalCalories: Float = this.totalCalories,
-        totalProteins: Float = this.totalProteins,
-        totalFat: Float = this.totalFat,
-        totalCarbs: Float = this.totalCarbs
-    ): Totals {
-        return Totals().apply {
-            this.id = id
-            this.name = name
-            this.weight = weight
-            this.totalCalories = totalCalories
-            this.totalProteins = totalProteins
-            this.totalFat = totalFat
-            this.totalCarbs = totalCarbs
-        }
-    }
 }

@@ -41,6 +41,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -85,7 +86,8 @@ private data class WorkoutSetDraft(
 @Composable
 fun WorkoutScreen(
     repository: FoodRepository,
-    contentPadding: PaddingValues = PaddingValues(0.dp)
+    contentPadding: PaddingValues = PaddingValues(0.dp),
+    dataRevision: Int = 0
 ) {
     val scope = rememberCoroutineScope()
     var searchText by remember { mutableStateOf("") }
@@ -93,13 +95,13 @@ fun WorkoutScreen(
     var entries by remember { mutableStateOf(emptyList<WorkoutEntry>()) }
     var selectedEntry by remember { mutableStateOf<WorkoutEntry?>(null) }
     var showDialog by remember { mutableStateOf(false) }
-    var refreshTrigger by remember { mutableStateOf(0) }
-    var visibleCount by remember { mutableStateOf(100) }
+    var refreshTrigger by remember { mutableIntStateOf(0) }
+    var visibleCount by remember { mutableIntStateOf(100) }
     var searchAnchor by remember { mutableStateOf<IntOffset?>(null) }
-    var searchAnchorWidthPx by remember { mutableStateOf(0) }
+    var searchAnchorWidthPx by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
 
-    val searchSuggestions = remember(searchText, refreshTrigger) {
+    val searchSuggestions = remember(searchText, refreshTrigger, dataRevision) {
         if (searchText.trim().isNotEmpty()) {
             repository.getWorkoutNameSuggestions(searchText)
         } else {
@@ -107,7 +109,7 @@ fun WorkoutScreen(
         }
     }
 
-    LaunchedEffect(searchText, refreshTrigger) {
+    LaunchedEffect(searchText, refreshTrigger, dataRevision) {
         entries = repository.getWorkoutEntriesNewestFirst(searchText)
         visibleCount = min(100, entries.size)
     }
@@ -284,8 +286,8 @@ private fun WorkoutEntryDialog(
     var notes by remember { mutableStateOf(entry?.notes ?: "") }
     var date by remember { mutableStateOf(millisToLocalDate(entry?.dateMillis ?: nowMillis())) }
     var showNameSuggestions by remember { mutableStateOf(false) }
-    var nameRefreshTrigger by remember { mutableStateOf(0) }
-    var nameFieldWidthPx by remember { mutableStateOf(0) }
+    var nameRefreshTrigger by remember { mutableIntStateOf(0) }
+    var nameFieldWidthPx by remember { mutableIntStateOf(0) }
     val setDrafts = remember { mutableStateListOf<WorkoutSetDraft>() }
     val context = LocalContext.current
 

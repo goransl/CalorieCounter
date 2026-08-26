@@ -12,7 +12,7 @@ fun Modifier.swipeToNavigate(
     onSwipeLeft: (() -> Unit)? = null,     // user moved left → go next
     onSwipeRight: (() -> Unit)? = null     // user moved right → go back
 ): Modifier {
-    var totalDrag by remember { mutableStateOf(0f) }
+    var totalDrag by remember { mutableFloatStateOf(0f) }
     return this.pointerInput(Unit) {
         detectHorizontalDragGestures(
             onDragStart = { totalDrag = 0f },
