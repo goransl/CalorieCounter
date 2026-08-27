@@ -13,5 +13,30 @@ class WorkoutEntry : RealmObject {
     var dateMillis: Long = 0L
     var notes: String = ""
     var sets: RealmList<WorkoutSet> = realmListOf()
+    /** Zero-based position inside a workout day. */
+    var position: Int = 0
+    /** Only completed exercises are shown in workout history. */
+    var completed: Boolean = false
+    /** Empty when not in a superset; equal values identify exercises in the same group. */
+    var supersetGroupId: String = ""
     var updatedAt: Long = 0L
 }
+
+/** Detached, immutable workout data safe to keep in Compose state after Realm changes. */
+data class WorkoutEntrySnapshot(
+    val id: String,
+    val name: String,
+    val dateMillis: Long,
+    val notes: String,
+    val sets: List<WorkoutSetSnapshot>,
+    val position: Int,
+    val completed: Boolean,
+    val supersetGroupId: String,
+    val updatedAt: Long
+)
+
+/** Detached summary used by the copy-workout picker. */
+data class WorkoutDaySummary(
+    val dateMillis: Long,
+    val exerciseNames: List<String>
+)

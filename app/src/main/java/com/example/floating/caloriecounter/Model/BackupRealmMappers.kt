@@ -92,12 +92,18 @@ internal fun WorkoutEntry.toBackupModel() = WorkoutEntryBackup(
     name = name,
     dateMillis = dateMillis,
     notes = notes,
+    position = position,
+    completed = completed,
+    supersetGroupId = supersetGroupId,
     updatedAt = updatedAt,
     sets = sets.map { set ->
         WorkoutSetBackup(
             weightKg = set.weightKg,
             reps = set.reps,
-            rest = set.rest
+            rest = set.rest,
+            restSeconds = set.restSeconds,
+            notes = set.notes,
+            completed = set.completed
         )
     }
 )
@@ -107,12 +113,22 @@ internal fun WorkoutEntryBackup.toRealmModel() = WorkoutEntry().also { workout -
     workout.name = name
     workout.dateMillis = dateMillis
     workout.notes = notes
+    workout.position = position
+    workout.completed = completed
+    workout.supersetGroupId = supersetGroupId
     workout.updatedAt = updatedAt
     sets.forEach { set ->
         workout.sets.add(WorkoutSet().also { workoutSet ->
             workoutSet.weightKg = set.weightKg
             workoutSet.reps = set.reps
             workoutSet.rest = set.rest
+            workoutSet.restSeconds = if (set.restSeconds > 0) {
+                set.restSeconds
+            } else {
+                parseRestSeconds(set.rest)
+            }
+            workoutSet.notes = set.notes
+            workoutSet.completed = set.completed
         })
     }
 }
@@ -126,4 +142,3 @@ internal fun WorkoutNameBackup.toRealmModel() = WorkoutName().also { workoutName
     workoutName.name = name
     workoutName.lastUsed = lastUsed
 }
-

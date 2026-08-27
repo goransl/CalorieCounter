@@ -47,12 +47,16 @@ class BackupArchiveTest {
         val archive = decodeBackupZip(ByteArrayInputStream(bytes))
 
         assertEquals(original, archive.data)
-        assertEquals(1, archive.manifest?.formatVersion)
+        assertEquals(2, archive.manifest?.formatVersion)
         assertEquals("1.2.3-test", archive.manifest?.appVersion)
         assertEquals(1_700_000_000_000L, archive.manifest?.createdAtEpochMillis)
         assertFalse(archive.isLegacy)
         assertFalse(archive.data.totals.single().included)
         assertFalse(archive.data.totals.single().toRealmModel().included)
+        assertFalse(archive.data.workoutEntries.single().completed)
+        assertEquals("A", archive.data.workoutEntries.single().supersetGroupId)
+        assertEquals(90, archive.data.workoutEntries.single().sets.single().restSeconds)
+        assertTrue(archive.data.workoutEntries.single().sets.single().completed)
         assertEquals("Čokolada 🍫", archive.data.foods.single().name)
     }
 
@@ -79,6 +83,41 @@ class BackupArchiveTest {
         assertTrue(archive.data.totals.single().included)
         assertTrue(archive.data.totals.single().toRealmModel().included)
         assertEquals(null, archive.data.expectedPlan)
+    }
+
+    @Test
+    fun versionOneWorkoutWithoutNewFieldsImportsAsCompletedHistory() {
+        val entries = legacyEntries(
+            workoutsJson = """
+                [{
+                  "id":"legacy-workout",
+                  "name":"Legacy squat",
+                  "dateMillis":1700000000000,
+                  "notes":"Old history",
+                  "updatedAt":1700000000100,
+                  "sets":[{"weightKg":100.0,"reps":5,"rest":"2 min"}]
+                }]
+            """.trimIndent()
+        ).toMutableMap().apply {
+            put(
+                BACKUP_MANIFEST_FILE,
+                """{"formatVersion":1,"createdAtEpochMillis":1,"appVersion":"old"}"""
+            )
+        }
+
+        val archive = decodeBackupZip(ByteArrayInputStream(zipOf(entries)))
+        val workout = archive.data.workoutEntries.single()
+        val realmWorkout = workout.toRealmModel()
+
+        assertFalse(archive.isLegacy)
+        assertTrue(workout.completed)
+        assertEquals(0, workout.position)
+        assertEquals("", workout.supersetGroupId)
+        assertTrue(workout.sets.single().completed)
+        assertEquals(0, workout.sets.single().restSeconds)
+        assertTrue(realmWorkout.completed)
+        assertTrue(realmWorkout.sets.single().completed)
+        assertEquals(120, realmWorkout.sets.single().restSeconds)
     }
 
     @Test
@@ -169,8 +208,20 @@ class BackupArchiveTest {
                 name = "Počep",
                 dateMillis = 1_700_000_000_500L,
                 notes = "Dober trening",
+                position = 3,
+                completed = false,
+                supersetGroupId = "A",
                 updatedAt = 1_700_000_000_600L,
-                sets = listOf(WorkoutSetBackup(weightKg = 100f, reps = 5, rest = "2 min"))
+                sets = listOf(
+                    WorkoutSetBackup(
+                        weightKg = 100f,
+                        reps = 5,
+                        rest = "1:30",
+                        restSeconds = 90,
+                        notes = "Controlled eccentric",
+                        completed = true
+                    )
+                )
             )
         ),
         workoutNames = listOf(
@@ -178,12 +229,15 @@ class BackupArchiveTest {
         )
     )
 
-    private fun legacyEntries(totalsJson: String = "[]") = linkedMapOf(
+    private fun legacyEntries(
+        totalsJson: String = "[]",
+        workoutsJson: String = "[]"
+    ) = linkedMapOf(
         BACKUP_FOODS_FILE to "[]",
         BACKUP_TOTALS_FILE to totalsJson,
         BACKUP_PLAN_FILE to "{}",
         BACKUP_WEIGHTS_FILE to "[]",
-        BACKUP_WORKOUT_ENTRIES_FILE to "[]",
+        BACKUP_WORKOUT_ENTRIES_FILE to workoutsJson,
         BACKUP_WORKOUT_NAMES_FILE to "[]"
     )
 
@@ -199,4 +253,3 @@ class BackupArchiveTest {
         return output.toByteArray()
     }
 }
-

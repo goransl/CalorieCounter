@@ -6,6 +6,7 @@ import com.example.floating.caloriecounter.backup.BackupData
 import com.example.floating.caloriecounter.backup.BackupFormatException
 import com.example.floating.caloriecounter.backup.BackupManifest
 import com.example.floating.caloriecounter.backup.CURRENT_BACKUP_FORMAT_VERSION
+import com.example.floating.caloriecounter.backup.MIN_SUPPORTED_BACKUP_FORMAT_VERSION
 import com.example.floating.caloriecounter.backup.ExpectedPlanBackup
 import com.example.floating.caloriecounter.backup.FoodBackup
 import com.example.floating.caloriecounter.backup.TotalsBackup
@@ -144,7 +145,8 @@ fun encodeBackupZip(
 
 /**
  * Decodes both current archives and legacy archives produced before manifest.json existed.
- * Legacy totals that do not contain `included` use [TotalsBackup]'s default value of true.
+ * Version 1 and legacy archives remain importable; missing workout tracking properties use
+ * completed-history defaults so an old restore does not hide previously logged workouts.
  */
 fun decodeBackupZip(inputStream: InputStream): BackupArchive {
     val entries = readZipEntries(inputStream)
@@ -156,8 +158,9 @@ fun decodeBackupZip(inputStream: InputStream): BackupArchive {
         decodeJson(BACKUP_MANIFEST_FILE, BackupManifest.serializer(), text)
     }
     if (manifest != null) {
-        ensure(manifest.formatVersion == CURRENT_BACKUP_FORMAT_VERSION) {
-            "Unsupported backup format ${manifest.formatVersion}; this app supports format $CURRENT_BACKUP_FORMAT_VERSION."
+        ensure(manifest.formatVersion in MIN_SUPPORTED_BACKUP_FORMAT_VERSION..CURRENT_BACKUP_FORMAT_VERSION) {
+            "Unsupported backup format ${manifest.formatVersion}; this app supports formats " +
+                "$MIN_SUPPORTED_BACKUP_FORMAT_VERSION-$CURRENT_BACKUP_FORMAT_VERSION."
         }
     }
 
@@ -326,8 +329,15 @@ private fun validateBackupData(data: BackupData) {
         ensureFinite("weights[$index].weightKg", weight.weightKg)
     }
     data.workoutEntries.forEachIndexed { entryIndex, entry ->
+        ensure(entry.position >= 0) { "workoutEntries[$entryIndex].position cannot be negative." }
         entry.sets.forEachIndexed { setIndex, set ->
             ensureFinite("workoutEntries[$entryIndex].sets[$setIndex].weightKg", set.weightKg)
+            ensure(set.reps >= 0) {
+                "workoutEntries[$entryIndex].sets[$setIndex].reps cannot be negative."
+            }
+            ensure(set.restSeconds >= 0) {
+                "workoutEntries[$entryIndex].sets[$setIndex].restSeconds cannot be negative."
+            }
         }
     }
 }

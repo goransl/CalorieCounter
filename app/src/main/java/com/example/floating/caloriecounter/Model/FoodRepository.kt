@@ -9,6 +9,7 @@ import io.realm.kotlin.Realm
 import io.realm.kotlin.RealmConfiguration
 import io.realm.kotlin.dynamic.DynamicMutableRealmObject
 import io.realm.kotlin.dynamic.DynamicRealmObject
+import io.realm.kotlin.dynamic.getValue
 import io.realm.kotlin.ext.query
 import io.realm.kotlin.migration.AutomaticSchemaMigration
 import io.realm.kotlin.query.RealmResults
@@ -27,17 +28,33 @@ class FoodRepository : AutoCloseable {
             WorkoutName::class
         )
     )
-        .schemaVersion(6) // increment this (start at 1 if you never had one)
+        .schemaVersion(7)
         .migration(
             AutomaticSchemaMigration { ctx ->
-                ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
-                    newObj?.set("totalCost", 0f)
+                val oldVersion = ctx.oldRealm.schemaVersion()
+                if (oldVersion < 6) {
+                    ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                        newObj?.set("totalCost", 0f)
+                    }
                 }
 
-                /*ctx.enumerate(className = "Food") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
-                    newObj?.set("price", 0f)
-                    newObj?.set("priceGrams", 0f)
-                }*/
+                if (oldVersion < 7 && ctx.oldRealm.schema()["WorkoutEntry"] != null) {
+                    // Everything already stored in Workout tracking is historical/performed data.
+                    ctx.enumerate(className = "WorkoutEntry") { oldObj: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                        newObj?.set("position", 0L)
+                        newObj?.set("completed", true)
+                        newObj?.set("supersetGroupId", "")
+                        val oldSets = oldObj.getObjectList("sets")
+                        val newSets = newObj?.getObjectList("sets")
+                        oldSets.forEachIndexed { index, oldSet ->
+                            val newSet = newSets?.getOrNull(index) ?: return@forEachIndexed
+                            val legacyRest = oldSet.getValue<String>("rest")
+                            newSet.set("restSeconds", parseRestSeconds(legacyRest).toLong())
+                            newSet.set("notes", "")
+                            newSet.set("completed", true)
+                        }
+                    }
+                }
             }
         )
         .build()
@@ -63,7 +80,11 @@ class FoodRepository : AutoCloseable {
             weights = query<WeightEntry>().find().map(WeightEntry::toBackupModel)
                 .sortedWith(compareBy<WeightEntryBackup> { it.timestamp }.thenBy { it.id }),
             workoutEntries = query<WorkoutEntry>().find().map(WorkoutEntry::toBackupModel)
-                .sortedWith(compareBy<WorkoutEntryBackup> { it.dateMillis }.thenBy { it.id }),
+                .sortedWith(
+                    compareBy<WorkoutEntryBackup> { it.dateMillis }
+                        .thenBy { it.position }
+                        .thenBy { it.id }
+                ),
             workoutNames = query<WorkoutName>().find().map(WorkoutName::toBackupModel)
                 .sortedWith(compareBy<WorkoutNameBackup> { it.lastUsed }.thenBy { it.name })
         )
@@ -397,30 +418,45 @@ class FoodRepository : AutoCloseable {
         }
     }
 
-    // --- Workout tracking API ---
+    // --- Date-based workout planning and history API ---
     suspend fun saveWorkoutEntry(
         name: String,
         dateMillis: Long,
         notes: String,
-        sets: List<Triple<Float, Int, String>>
+        completed: Boolean,
+        supersetGroupId: String,
+        sets: List<WorkoutSetInput>
     ) {
+        val normalizedName = name.trim()
+        require(normalizedName.isNotEmpty()) { "Exercise name is required." }
         realm.write {
+            val now = System.currentTimeMillis()
+            val nextPosition = query<WorkoutEntry>("dateMillis == $0", dateMillis)
+                .find()
+                .maxOfOrNull { it.position }
+                ?.plus(1)
+                ?: 0
             val entry = WorkoutEntry().apply {
-                this.name = name
+                this.name = normalizedName
                 this.dateMillis = dateMillis
-                this.notes = notes
-                this.updatedAt = System.currentTimeMillis()
-                sets.forEach { (weightKg, reps, rest) ->
-                    this.sets.add(WorkoutSet().apply {
-                        this.weightKg = weightKg
-                        this.reps = reps
-                        this.rest = rest
-                    })
-                }
+                this.notes = notes.trimEnd()
+                this.position = nextPosition
+                this.completed = completed
+                this.supersetGroupId = supersetGroupId.trim()
+                this.updatedAt = now
+                sets.forEach { set -> this.sets.add(set.toRealmSet()) }
             }
             copyToRealm(entry)
+            val knownName = query<WorkoutName>("name == $0", normalizedName).first().find()
+            if (knownName != null) {
+                knownName.lastUsed = now
+            } else {
+                copyToRealm(WorkoutName().apply {
+                    this.name = normalizedName
+                    lastUsed = now
+                })
+            }
         }
-        touchWorkoutName(name)
     }
 
     suspend fun updateWorkoutEntry(
@@ -428,47 +464,203 @@ class FoodRepository : AutoCloseable {
         name: String,
         dateMillis: Long,
         notes: String,
-        sets: List<Triple<Float, Int, String>>
+        completed: Boolean,
+        supersetGroupId: String,
+        sets: List<WorkoutSetInput>
     ) {
+        val normalizedName = name.trim()
+        require(normalizedName.isNotEmpty()) { "Exercise name is required." }
         realm.write {
+            val now = System.currentTimeMillis()
             val existing = query<WorkoutEntry>("id == $0", id).first().find()
-            if (existing != null) {
-                existing.name = name
-                existing.dateMillis = dateMillis
-                existing.notes = notes
-                existing.updatedAt = System.currentTimeMillis()
-                existing.sets.clear()
-                sets.forEach { (weightKg, reps, rest) ->
-                    existing.sets.add(WorkoutSet().apply {
-                        this.weightKg = weightKg
-                        this.reps = reps
-                        this.rest = rest
-                    })
-                }
+                ?: throw IllegalArgumentException("Exercise no longer exists.")
+            val previousDateMillis = existing.dateMillis
+            if (previousDateMillis != dateMillis) {
+                existing.position = query<WorkoutEntry>("dateMillis == $0", dateMillis)
+                    .find()
+                    .maxOfOrNull { it.position }
+                    ?.plus(1)
+                    ?: 0
+            }
+            existing.name = normalizedName
+            existing.dateMillis = dateMillis
+            existing.notes = notes.trimEnd()
+            existing.completed = completed
+            existing.supersetGroupId = supersetGroupId.trim()
+            existing.updatedAt = now
+            existing.sets.clear()
+            sets.forEach { set -> existing.sets.add(set.toRealmSet()) }
+
+            if (previousDateMillis != dateMillis) {
+                query<WorkoutEntry>("dateMillis == $0", previousDateMillis)
+                    .find()
+                    .sortedWith(workoutDayComparator)
+                    .forEachIndexed { index, workout -> workout.position = index }
+            }
+
+            val knownName = query<WorkoutName>("name == $0", normalizedName).first().find()
+            if (knownName != null) {
+                knownName.lastUsed = now
+            } else {
+                copyToRealm(WorkoutName().apply {
+                    this.name = normalizedName
+                    lastUsed = now
+                })
             }
         }
-        touchWorkoutName(name)
     }
 
     suspend fun deleteWorkoutEntry(id: String) {
         realm.write {
-            query<WorkoutEntry>("id == $0", id).first().find()?.let { delete(it) }
+            val entry = query<WorkoutEntry>("id == $0", id).first().find() ?: return@write
+            val dateMillis = entry.dateMillis
+            delete(entry)
+            query<WorkoutEntry>("dateMillis == $0", dateMillis)
+                .find()
+                .sortedWith(workoutDayComparator)
+                .forEachIndexed { index, remaining -> remaining.position = index }
         }
     }
 
-    fun getWorkoutEntriesNewestFirst(searchQuery: String): List<WorkoutEntry> {
-        val trimmed = searchQuery.trim()
-        val results = if (trimmed.isEmpty()) {
-            realm.query<WorkoutEntry>()
-        } else {
-            val words = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
-            var q = realm.query<WorkoutEntry>("name CONTAINS[c] $0", words.first())
-            words.drop(1).forEach { w ->
-                q = q.query("name CONTAINS[c] $0", w)
+    suspend fun setWorkoutEntryCompleted(id: String, completed: Boolean) {
+        realm.write {
+            query<WorkoutEntry>("id == $0", id).first().find()?.let { entry ->
+                entry.completed = completed
+                entry.updatedAt = System.currentTimeMillis()
             }
-            q
         }
-        return results.sort("dateMillis", Sort.DESCENDING).find()
+    }
+
+    suspend fun reorderWorkoutEntries(dateMillis: Long, orderedIds: List<String>) {
+        realm.write {
+            val existing = query<WorkoutEntry>("dateMillis == $0", dateMillis)
+                .find()
+                .sortedWith(workoutDayComparator)
+            val byId = existing.associateBy { it.id }
+            val ordered = buildList<WorkoutEntry> {
+                orderedIds.distinct().forEach { id -> byId[id]?.let { add(it) } }
+                existing.forEach { entry -> if (none { it.id == entry.id }) add(entry) }
+            }
+            ordered.forEachIndexed { index, workout -> workout.position = index }
+        }
+    }
+
+    fun getWorkoutEntriesForDate(dateMillis: Long): List<WorkoutEntrySnapshot> =
+        realm.query<WorkoutEntry>("dateMillis == $0", dateMillis)
+            .find()
+            .sortedWith(workoutDayComparator)
+            .map { it.toSnapshot() }
+
+    fun getRecentWorkoutDays(excludingDateMillis: Long, limit: Int = 10): List<WorkoutDaySummary> {
+        return realm.query<WorkoutEntry>()
+            .find()
+            .asSequence()
+            .filter { it.dateMillis != excludingDateMillis }
+            .groupBy { it.dateMillis }
+            .entries
+            .sortedByDescending { it.key }
+            .take(limit.coerceAtLeast(0))
+            .map { (dateMillis, entries) ->
+                WorkoutDaySummary(
+                    dateMillis = dateMillis,
+                    exerciseNames = entries.sortedWith(workoutDayComparator).map { it.name }
+                )
+            }
+    }
+
+    suspend fun copyWorkoutDay(
+        sourceDateMillis: Long,
+        targetDateMillis: Long,
+        includeDetails: Boolean,
+        replaceExisting: Boolean
+    ): Int {
+        require(sourceDateMillis != targetDateMillis) { "Source and target workout days must differ." }
+        return realm.write {
+            val source = query<WorkoutEntry>("dateMillis == $0", sourceDateMillis)
+                .find()
+                .sortedWith(workoutDayComparator)
+            if (source.isEmpty()) return@write 0
+
+            if (replaceExisting) {
+                delete(query<WorkoutEntry>("dateMillis == $0", targetDateMillis))
+            }
+            val firstPosition = query<WorkoutEntry>("dateMillis == $0", targetDateMillis)
+                .find()
+                .maxOfOrNull { it.position }
+                ?.plus(1)
+                ?: 0
+            val now = System.currentTimeMillis()
+
+            source.forEachIndexed { index, original ->
+                copyToRealm(WorkoutEntry().apply {
+                    name = original.name
+                    dateMillis = targetDateMillis
+                    notes = if (includeDetails) original.notes else ""
+                    position = firstPosition + index
+                    completed = false
+                    supersetGroupId = original.supersetGroupId
+                    updatedAt = now
+                    original.sets.forEach { originalSet ->
+                        sets.add(WorkoutSet().apply {
+                            weightKg = if (includeDetails) originalSet.weightKg else 0f
+                            reps = if (includeDetails) originalSet.reps else 0
+                            rest = if (includeDetails) originalSet.rest else ""
+                            restSeconds = if (includeDetails) originalSet.restSeconds else 0
+                            notes = if (includeDetails) originalSet.notes else ""
+                            completed = false
+                        })
+                    }
+                })
+
+                val knownName = query<WorkoutName>("name == $0", original.name).first().find()
+                if (knownName != null) {
+                    knownName.lastUsed = now
+                } else {
+                    copyToRealm(WorkoutName().apply {
+                        name = original.name
+                        lastUsed = now
+                    })
+                }
+            }
+            source.size
+        }
+    }
+
+    fun getWorkoutEntriesNewestFirst(
+        searchQuery: String,
+        completedOnly: Boolean = true
+    ): List<WorkoutEntrySnapshot> {
+        val trimmed = searchQuery.trim()
+        var results = if (completedOnly) {
+            realm.query<WorkoutEntry>("completed == $0", true)
+        } else {
+            realm.query<WorkoutEntry>()
+        }
+        if (trimmed.isNotEmpty()) {
+            val words = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            results = results.query("name CONTAINS[c] $0", words.first())
+            words.drop(1).forEach { w ->
+                results = results.query("name CONTAINS[c] $0", w)
+            }
+        }
+        return results.find().sortedWith(
+            compareByDescending<WorkoutEntry> { it.dateMillis }
+                .thenBy { it.position }
+                .thenByDescending { it.updatedAt }
+        ).map { it.toSnapshot() }
+    }
+
+    fun getLatestWorkoutEntryByName(name: String): WorkoutEntrySnapshot? {
+        val normalizedName = name.trim()
+        if (normalizedName.isEmpty()) return null
+
+        return realm.query<WorkoutEntry>("name == $0", normalizedName)
+            .find()
+            .maxWithOrNull(
+                compareBy<WorkoutEntry> { it.dateMillis }
+                    .thenBy { it.updatedAt }
+            )
+            ?.toSnapshot()
     }
 
     fun getWorkoutNameSuggestions(query: String): List<String> {
@@ -509,6 +701,46 @@ class FoodRepository : AutoCloseable {
         realm.write {
             query<WorkoutName>("name == $0", trimmed).first().find()?.let { delete(it) }
         }
+    }
+
+    private fun WorkoutSetInput.toRealmSet() = WorkoutSet().apply {
+        weightKg = this@toRealmSet.weightKg
+        reps = this@toRealmSet.reps
+        rest = this@toRealmSet.rest.trimEnd()
+        restSeconds = if (this@toRealmSet.restSeconds > 0) {
+            this@toRealmSet.restSeconds
+        } else {
+            parseRestSeconds(this@toRealmSet.rest)
+        }
+        notes = this@toRealmSet.notes.trimEnd()
+        completed = this@toRealmSet.completed
+    }
+
+    private fun WorkoutEntry.toSnapshot() = WorkoutEntrySnapshot(
+        id = id,
+        name = name,
+        dateMillis = dateMillis,
+        notes = notes,
+        sets = sets.map { it.toSnapshot() },
+        position = position,
+        completed = completed,
+        supersetGroupId = supersetGroupId,
+        updatedAt = updatedAt
+    )
+
+    private fun WorkoutSet.toSnapshot() = WorkoutSetSnapshot(
+        weightKg = weightKg,
+        reps = reps,
+        rest = rest,
+        restSeconds = restSeconds,
+        notes = notes,
+        completed = completed
+    )
+
+    private companion object {
+        val workoutDayComparator = compareBy<WorkoutEntry> { it.position }
+            .thenBy { it.updatedAt }
+            .thenBy { it.id }
     }
 
 }

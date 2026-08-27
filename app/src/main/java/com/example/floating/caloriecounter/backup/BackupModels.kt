@@ -3,7 +3,8 @@ package com.example.floating.caloriecounter.backup
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-const val CURRENT_BACKUP_FORMAT_VERSION = 1
+const val CURRENT_BACKUP_FORMAT_VERSION = 2
+const val MIN_SUPPORTED_BACKUP_FORMAT_VERSION = 1
 
 @Serializable
 data class BackupManifest(
@@ -60,7 +61,11 @@ data class WeightEntryBackup(
 data class WorkoutSetBackup(
     val weightKg: Float = 0f,
     val reps: Int = 0,
-    val rest: String = ""
+    val rest: String = "",
+    val restSeconds: Int = 0,
+    val notes: String = "",
+    // Workout data in older archives represents already performed history.
+    val completed: Boolean = true
 )
 
 @Serializable
@@ -69,6 +74,10 @@ data class WorkoutEntryBackup(
     val name: String = "",
     val dateMillis: Long = 0L,
     val notes: String = "",
+    val position: Int = 0,
+    // Workout data in older archives represents already performed history.
+    val completed: Boolean = true,
+    val supersetGroupId: String = "",
     val updatedAt: Long = 0L,
     val sets: List<WorkoutSetBackup> = emptyList()
 )
