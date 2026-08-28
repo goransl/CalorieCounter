@@ -643,11 +643,34 @@ class FoodRepository : AutoCloseable {
                 results = results.query("name CONTAINS[c] $0", w)
             }
         }
-        return results.find().sortedWith(
-            compareByDescending<WorkoutEntry> { it.dateMillis }
-                .thenBy { it.position }
-                .thenByDescending { it.updatedAt }
-        ).map { it.toSnapshot() }
+        return results.find()
+            .sortedWith(workoutHistoryComparator)
+            .map { it.toSnapshot() }
+    }
+
+    fun getCompletedWorkoutEntriesForExercise(name: String): List<WorkoutEntrySnapshot> {
+        val normalizedName = name.trim()
+        if (normalizedName.isEmpty()) return emptyList()
+
+        return realm.query<WorkoutEntry>(
+            "completed == $0 AND name == $1",
+            true,
+            normalizedName
+        )
+            .find()
+            .sortedWith(workoutHistoryComparator)
+            .map { it.toSnapshot() }
+    }
+
+    fun hasCompletedWorkoutHistory(name: String): Boolean {
+        val normalizedName = name.trim()
+        if (normalizedName.isEmpty()) return false
+
+        return realm.query<WorkoutEntry>(
+            "completed == $0 AND name == $1",
+            true,
+            normalizedName
+        ).first().find() != null
     }
 
     fun getLatestWorkoutEntryByName(name: String): WorkoutEntrySnapshot? {
@@ -741,6 +764,9 @@ class FoodRepository : AutoCloseable {
         val workoutDayComparator = compareBy<WorkoutEntry> { it.position }
             .thenBy { it.updatedAt }
             .thenBy { it.id }
+        val workoutHistoryComparator = compareByDescending<WorkoutEntry> { it.dateMillis }
+            .thenBy { it.position }
+            .thenByDescending { it.updatedAt }
     }
 
 }

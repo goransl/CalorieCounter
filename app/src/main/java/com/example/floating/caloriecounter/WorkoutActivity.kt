@@ -2,6 +2,7 @@ package com.example.floating.caloriecounter
 
 import android.app.DatePickerDialog
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +27,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
@@ -112,7 +114,8 @@ private data class WorkoutSetDraft(
 fun WorkoutScreen(
     repository: FoodRepository,
     contentPadding: PaddingValues = PaddingValues(0.dp),
-    dataRevision: Int = 0
+    dataRevision: Int = 0,
+    isVisible: Boolean = true
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -122,6 +125,9 @@ fun WorkoutScreen(
     var historyEntries by remember { mutableStateOf(emptyList<WorkoutEntrySnapshot>()) }
     var searchText by remember { mutableStateOf("") }
     var showSearchSuggestions by remember { mutableStateOf(false) }
+    var historyProgressExerciseName by remember { mutableStateOf<String?>(null) }
+    var progressExerciseName by remember { mutableStateOf<String?>(null) }
+    var progressEntries by remember { mutableStateOf(emptyList<WorkoutEntrySnapshot>()) }
     var selectedEntry by remember { mutableStateOf<WorkoutEntrySnapshot?>(null) }
     var dialogInitialDate by remember { mutableStateOf(LocalDate.now()) }
     var showEntryDialog by remember { mutableStateOf(false) }
@@ -149,6 +155,27 @@ fun WorkoutScreen(
         )
     }
 
+    LaunchedEffect(progressExerciseName, refreshTrigger, dataRevision) {
+        progressEntries = progressExerciseName?.let { exerciseName ->
+            repository.getCompletedWorkoutEntriesForExercise(exerciseName)
+        }.orEmpty()
+    }
+
+    BackHandler(
+        enabled = isVisible && progressExerciseName != null &&
+            !showEntryDialog && !showCopyDialog
+    ) {
+        progressExerciseName = null
+    }
+
+    val openExerciseProgress: (String) -> Unit = { exerciseName ->
+        val normalizedName = exerciseName.trim()
+        if (normalizedName.isNotEmpty()) {
+            progressEntries = repository.getCompletedWorkoutEntriesForExercise(normalizedName)
+            progressExerciseName = normalizedName
+        }
+    }
+
     val openDayDatePicker = {
         DatePickerDialog(
             context,
@@ -164,7 +191,23 @@ fun WorkoutScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Workout", color = Color.White) },
+                title = {
+                    Text(
+                        if (progressExerciseName == null) "Workout" else "Exercise progress",
+                        color = Color.White
+                    )
+                },
+                navigationIcon = {
+                    if (progressExerciseName != null) {
+                        IconButton(onClick = { progressExerciseName = null }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to workout",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color(0xFF121212),
                     titleContentColor = Color.White
@@ -178,17 +221,29 @@ fun WorkoutScreen(
                 .padding(padding)
                 .padding(bottom = contentPadding.calculateBottomPadding())
         ) {
-            TabRow(selectedTabIndex = selectedView.ordinal) {
-                WorkoutView.entries.forEach { view ->
-                    Tab(
-                        selected = selectedView == view,
-                        onClick = { selectedView = view },
-                        text = { Text(view.title) }
-                    )
+            val currentProgressExercise = progressExerciseName
+            if (currentProgressExercise != null) {
+                WorkoutProgressView(
+                    exerciseName = currentProgressExercise,
+                    entries = progressEntries,
+                    onEdit = { entry ->
+                        selectedEntry = entry
+                        dialogInitialDate = millisToLocalDate(entry.dateMillis)
+                        showEntryDialog = true
+                    }
+                )
+            } else {
+                TabRow(selectedTabIndex = selectedView.ordinal) {
+                    WorkoutView.entries.forEach { view ->
+                        Tab(
+                            selected = selectedView == view,
+                            onClick = { selectedView = view },
+                            text = { Text(view.title) }
+                        )
+                    }
                 }
-            }
 
-            when (selectedView) {
+                when (selectedView) {
                 WorkoutView.Day -> WorkoutDayView(
                     selectedDate = selectedDate,
                     entries = dayEntries,
@@ -210,6 +265,7 @@ fun WorkoutScreen(
                         dialogInitialDate = millisToLocalDate(entry.dateMillis)
                         showEntryDialog = true
                     },
+                    onViewProgress = { entry -> openExerciseProgress(entry.name) },
                     onToggleCompleted = { entry, completed ->
                         scope.launch {
                             withContext(Dispatchers.IO) {
@@ -232,6 +288,7 @@ fun WorkoutScreen(
                     searchText = searchText,
                     onSearchTextChange = {
                         searchText = it
+                        historyProgressExerciseName = null
                         showSearchSuggestions = it.trim().length >= 2
                     },
                     suggestions = if (showSearchSuggestions) searchSuggestions else emptyList(),
@@ -239,9 +296,13 @@ fun WorkoutScreen(
                     onSuggestionsDismissed = { showSearchSuggestions = false },
                     onSuggestionSelected = {
                         searchText = it
+                        historyProgressExerciseName = it
                         showSearchSuggestions = false
                     },
                     onSuggestionDeleted = { name ->
+                        if (historyProgressExerciseName == name) {
+                            historyProgressExerciseName = null
+                        }
                         scope.launch {
                             withContext(Dispatchers.IO) { repository.deleteWorkoutName(name) }
                             refreshTrigger++
@@ -251,8 +312,11 @@ fun WorkoutScreen(
                         selectedEntry = entry
                         dialogInitialDate = millisToLocalDate(entry.dateMillis)
                         showEntryDialog = true
-                    }
+                    },
+                    progressExerciseName = historyProgressExerciseName,
+                    onViewProgress = openExerciseProgress
                 )
+            }
             }
         }
     }
@@ -266,7 +330,16 @@ fun WorkoutScreen(
                 selectedEntry = null
                 showEntryDialog = false
             },
-            onSaved = {
+            onSaved = { savedName ->
+                selectedEntry?.name?.let { previousName ->
+                    if (progressExerciseName == previousName) {
+                        openExerciseProgress(savedName)
+                    }
+                    if (historyProgressExerciseName == previousName) {
+                        historyProgressExerciseName = savedName
+                        searchText = savedName
+                    }
+                }
                 refreshTrigger++
                 selectedEntry = null
                 showEntryDialog = false
@@ -275,10 +348,16 @@ fun WorkoutScreen(
                 selectedEntry?.id?.let { deletedId ->
                     dayEntries = dayEntries.filterNot { it.id == deletedId }
                     historyEntries = historyEntries.filterNot { it.id == deletedId }
+                    progressEntries = progressEntries.filterNot { it.id == deletedId }
                 }
                 refreshTrigger++
                 selectedEntry = null
                 showEntryDialog = false
+            },
+            onViewProgress = { exerciseName ->
+                selectedEntry = null
+                showEntryDialog = false
+                openExerciseProgress(exerciseName)
             }
         )
     }
@@ -310,6 +389,7 @@ private fun WorkoutDayView(
     onAddExercise: () -> Unit,
     onCopyWorkout: () -> Unit,
     onEdit: (WorkoutEntrySnapshot) -> Unit,
+    onViewProgress: (WorkoutEntrySnapshot) -> Unit,
     onToggleCompleted: (WorkoutEntrySnapshot, Boolean) -> Unit,
     onReorder: (List<String>) -> Unit
 ) {
@@ -395,6 +475,7 @@ private fun WorkoutDayView(
                         isDragging = draggingEntryId == entry.id,
                         dragTranslationY = dragTranslationY,
                         onClick = { onEdit(entry) },
+                        onViewProgress = { onViewProgress(entry) },
                         onCompletedChange = { completed ->
                             orderedEntries = orderedEntries.map { item ->
                                 if (item.id == entry.id) item.copy(completed = completed) else item
@@ -474,6 +555,7 @@ private fun WorkoutDayEntryCard(
     isDragging: Boolean,
     dragTranslationY: Float,
     onClick: () -> Unit,
+    onViewProgress: () -> Unit,
     onCompletedChange: (Boolean) -> Unit,
     onDragStart: () -> Unit,
     onDrag: (Float) -> Unit,
@@ -549,6 +631,13 @@ private fun WorkoutDayEntryCard(
                     Text(entry.notes, style = MaterialTheme.typography.bodySmall)
                 }
             }
+            IconButton(onClick = onViewProgress) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ShowChart,
+                    contentDescription = "View ${entry.name} progress",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
             Icon(
                 Icons.Default.DragHandle,
                 contentDescription = "Long press and drag to reorder",
@@ -560,7 +649,7 @@ private fun WorkoutDayEntryCard(
 }
 
 @Composable
-private fun WorkoutSetsSummary(sets: List<WorkoutSetSnapshot>) {
+internal fun WorkoutSetsSummary(sets: List<WorkoutSetSnapshot>) {
     if (sets.isEmpty()) return
     Spacer(Modifier.height(4.dp))
     sets.forEachIndexed { index, set ->
@@ -584,7 +673,9 @@ private fun WorkoutHistoryView(
     onSuggestionsDismissed: () -> Unit,
     onSuggestionSelected: (String) -> Unit,
     onSuggestionDeleted: (String) -> Unit,
-    onEdit: (WorkoutEntrySnapshot) -> Unit
+    onEdit: (WorkoutEntrySnapshot) -> Unit,
+    progressExerciseName: String?,
+    onViewProgress: (String) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -621,6 +712,47 @@ private fun WorkoutHistoryView(
                                 tint = MaterialTheme.colorScheme.error
                             )
                         }
+                    }
+                }
+            }
+        }
+
+        if (
+            progressExerciseName != null &&
+            entries.any { it.name == progressExerciseName }
+        ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp)
+                    .clickable { onViewProgress(progressExerciseName) },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ShowChart,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            "View progress",
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Text(
+                            progressExerciseName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
                     }
                 }
             }
@@ -677,8 +809,9 @@ private fun WorkoutEntryDialog(
     entry: WorkoutEntrySnapshot?,
     initialDate: LocalDate,
     onDismiss: () -> Unit,
-    onSaved: () -> Unit,
-    onDeleted: () -> Unit
+    onSaved: (String) -> Unit,
+    onDeleted: () -> Unit,
+    onViewProgress: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -713,6 +846,9 @@ private fun WorkoutEntryDialog(
 
     val nameSuggestions = remember(name, nameRefreshTrigger) {
         if (name.trim().length >= 2) repository.getWorkoutNameSuggestions(name) else emptyList()
+    }
+    val canViewProgress = remember(entry?.id) {
+        entry?.name?.let(repository::hasCompletedWorkoutHistory) == true
     }
 
     val openDatePicker = {
@@ -775,7 +911,7 @@ private fun WorkoutEntryDialog(
                                     )
                                 }
                             }
-                            onSaved()
+                            onSaved(trimmedName)
                         } catch (error: CancellationException) {
                             throw error
                         } catch (error: Throwable) {
@@ -914,6 +1050,18 @@ private fun WorkoutEntryDialog(
                                 }
                             }
                         }
+                    }
+                }
+
+                if (entry != null && canViewProgress) {
+                    TextButton(
+                        onClick = { onViewProgress(entry.name) },
+                        enabled = !isSaving,
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text("Progress")
                     }
                 }
 
@@ -1163,7 +1311,7 @@ private fun CopyWorkoutDialog(
     )
 }
 
-private fun formatWorkoutSet(set: WorkoutSetSnapshot): String {
+internal fun formatWorkoutSet(set: WorkoutSetSnapshot): String {
     val parts = mutableListOf<String>()
     if (set.weightKg > 0f) parts += "${formatWeightDisplay(set.weightKg)} kg"
     if (set.reps > 0) parts += "× ${set.reps}"
@@ -1175,7 +1323,7 @@ private fun formatWorkoutSet(set: WorkoutSetSnapshot): String {
     return parts.joinToString(" · ")
 }
 
-private fun formatWeightDisplay(value: Float): String =
+internal fun formatWeightDisplay(value: Float): String =
     String.format(Locale.US, "%.2f", value).trimEnd('0').trimEnd('.')
 
 private fun formatWeightInput(value: Float): String =

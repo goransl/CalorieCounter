@@ -193,7 +193,8 @@ fun MainScreen(repository: FoodRepository) {
                 WorkoutScreen(
                     repository = repository,
                     contentPadding = padding,
-                    dataRevision = dataRevision
+                    dataRevision = dataRevision,
+                    isVisible = showWorkout
                 )
             }
         }
