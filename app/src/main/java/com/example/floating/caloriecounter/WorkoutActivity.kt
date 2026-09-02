@@ -32,6 +32,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -820,11 +822,12 @@ private fun WorkoutEntryDialog(
     var date by remember(entry?.id, initialDate) {
         mutableStateOf(entry?.let { millisToLocalDate(it.dateMillis) } ?: initialDate)
     }
-    var completed by remember(entry?.id) { mutableStateOf(entry?.completed ?: false) }
+    var completed by remember(entry?.id) { mutableStateOf(entry?.completed ?: true) }
     var supersetGroupId by remember(entry?.id) {
         mutableStateOf(entry?.supersetGroupId ?: "")
     }
     var showNameSuggestions by remember { mutableStateOf(false) }
+    var showMoreOptions by remember(entry?.id) { mutableStateOf(false) }
     var nameRefreshTrigger by remember { mutableIntStateOf(0) }
     var isSaving by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -1053,40 +1056,70 @@ private fun WorkoutEntryDialog(
                     }
                 }
 
-                if (entry != null && canViewProgress) {
-                    TextButton(
-                        onClick = { onViewProgress(entry.name) },
-                        enabled = !isSaving,
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Progress")
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { showMoreOptions = !showMoreOptions },
+                    enabled = !isSaving,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("More options", modifier = Modifier.weight(1f))
+                    Icon(
+                        imageVector = if (showMoreOptions) {
+                            Icons.Default.ExpandLess
+                        } else {
+                            Icons.Default.ExpandMore
+                        },
+                        contentDescription = if (showMoreOptions) {
+                            "Collapse more options"
+                        } else {
+                            "Expand more options"
+                        }
+                    )
+                }
+
+                if (showMoreOptions) {
+                    Spacer(Modifier.height(4.dp))
+                    Column(modifier = Modifier.padding(horizontal = 4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Date: ${formatDate(date)}")
+                            TextButton(onClick = openDatePicker, enabled = !isSaving) {
+                                Text("Change")
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = completed, onCheckedChange = { completed = it })
+                            Text("Completed (include in History)")
+                        }
+
+                        OutlinedTextField(
+                            value = supersetGroupId,
+                            onValueChange = { supersetGroupId = it.take(20) },
+                            label = { Text("Superset group (e.g. A)") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        if (entry != null && canViewProgress) {
+                            TextButton(
+                                onClick = { onViewProgress(entry.name) },
+                                enabled = !isSaving,
+                                modifier = Modifier.align(Alignment.End)
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.ShowChart,
+                                    contentDescription = null
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Progress")
+                            }
+                        }
                     }
                 }
-
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Date: ${formatDate(date)}")
-                    TextButton(onClick = openDatePicker, enabled = !isSaving) { Text("Change") }
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = completed, onCheckedChange = { completed = it })
-                    Text("Completed (include in History)")
-                }
-
-                OutlinedTextField(
-                    value = supersetGroupId,
-                    onValueChange = { supersetGroupId = it.take(20) },
-                    label = { Text("Superset group (e.g. A)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
 
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -1193,7 +1226,9 @@ private fun WorkoutSetsEditor(setDrafts: SnapshotStateList<WorkoutSetDraft>) {
         }
 
         OutlinedButton(
-            onClick = { setDrafts.add(WorkoutSetDraft()) },
+            onClick = {
+                setDrafts.add(setDrafts.lastOrNull()?.copy() ?: WorkoutSetDraft())
+            },
             modifier = Modifier.align(Alignment.End)
         ) {
             Icon(Icons.Default.Add, contentDescription = null)
