@@ -2,6 +2,7 @@ package com.example.floating.caloriecounter.backup
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.util.UUID
 
 const val CURRENT_BACKUP_FORMAT_VERSION = 2
 const val MIN_SUPPORTED_BACKUP_FORMAT_VERSION = 1
@@ -104,6 +105,64 @@ data class BackupData(
             workoutEntries.sumOf { it.sets.size } +
             workoutNames.size +
             if (expectedPlan == null) 0 else 1
+}
+
+/**
+ * Repairs primary keys only in the detached backup snapshot. Legacy Realm rows can contain a
+ * blank key, but changing a primary key on a live Realm object during export is unsafe. There are
+ * no cross-table ID references in the backup format, so generated snapshot keys are lossless.
+ */
+internal fun BackupData.withGeneratedMissingPrimaryKeys(
+    generateId: () -> String = { UUID.randomUUID().toString() }
+): BackupData = copy(
+    foods = foods.withGeneratedMissingIds(
+        idOf = FoodBackup::id,
+        withId = { value, id -> value.copy(id = id) },
+        generateId = generateId
+    ),
+    totals = totals.withGeneratedMissingIds(
+        idOf = TotalsBackup::id,
+        withId = { value, id -> value.copy(id = id) },
+        generateId = generateId
+    ),
+    weights = weights.withGeneratedMissingIds(
+        idOf = WeightEntryBackup::id,
+        withId = { value, id -> value.copy(id = id) },
+        generateId = generateId
+    ),
+    workoutEntries = workoutEntries.withGeneratedMissingIds(
+        idOf = WorkoutEntryBackup::id,
+        withId = { value, id -> value.copy(id = id) },
+        generateId = generateId
+    )
+)
+
+private fun <T> List<T>.withGeneratedMissingIds(
+    idOf: (T) -> String,
+    withId: (T, String) -> T,
+    generateId: () -> String
+): List<T> {
+    if (none { idOf(it).isBlank() }) return this
+
+    val usedIds = map(idOf).filterNot(String::isBlank).toMutableSet()
+    return map { value ->
+        if (idOf(value).isNotBlank()) {
+            value
+        } else {
+            withId(value, nextUniqueBackupId(usedIds, generateId))
+        }
+    }
+}
+
+private fun nextUniqueBackupId(
+    usedIds: MutableSet<String>,
+    generateId: () -> String
+): String {
+    repeat(100) {
+        val candidate = generateId().trim()
+        if (candidate.isNotEmpty() && usedIds.add(candidate)) return candidate
+    }
+    throw IllegalStateException("Could not generate a unique backup record ID.")
 }
 
 data class BackupArchive(

@@ -10,6 +10,7 @@ import com.example.floating.caloriecounter.backup.WeightEntryBackup
 import com.example.floating.caloriecounter.backup.WorkoutEntryBackup
 import com.example.floating.caloriecounter.backup.WorkoutNameBackup
 import com.example.floating.caloriecounter.backup.WorkoutSetBackup
+import com.example.floating.caloriecounter.backup.withGeneratedMissingPrimaryKeys
 import com.example.floating.caloriecounter.utils.BACKUP_FOODS_FILE
 import com.example.floating.caloriecounter.utils.BACKUP_MANIFEST_FILE
 import com.example.floating.caloriecounter.utils.BACKUP_PLAN_FILE
@@ -159,6 +160,45 @@ class BackupArchiveTest {
         }
 
         assertTrue(error.message.orEmpty().contains("duplicate total IDs"))
+    }
+
+    @Test
+    fun legacyBlankPrimaryKeysAreGeneratedInSnapshotAndRemainImportable() {
+        val generatedIds = listOf(
+            "",
+            "existing-food-id",
+            "generated-food-id",
+            "generated-total-id",
+            "generated-weight-id",
+            "generated-workout-id"
+        ).iterator()
+        val legacySnapshot = BackupData(
+            foods = listOf(
+                FoodBackup(id = "existing-food-id", name = "Existing"),
+                FoodBackup(id = "", name = "Legacy food")
+            ),
+            totals = listOf(TotalsBackup(id = "", name = "Legacy total")),
+            weights = listOf(WeightEntryBackup(id = "", weightKg = 80f)),
+            workoutEntries = listOf(WorkoutEntryBackup(id = "", name = "Legacy workout"))
+        )
+
+        val normalized = legacySnapshot.withGeneratedMissingPrimaryKeys {
+            generatedIds.next()
+        }
+
+        assertEquals("existing-food-id", normalized.foods.first().id)
+        assertEquals("generated-food-id", normalized.foods.last().id)
+        assertEquals("generated-total-id", normalized.totals.single().id)
+        assertEquals("generated-weight-id", normalized.weights.single().id)
+        assertEquals("generated-workout-id", normalized.workoutEntries.single().id)
+
+        val bytes = ByteArrayOutputStream().also { output ->
+            encodeBackupZip(output, normalized, "test")
+        }.toByteArray()
+        assertEquals(
+            normalized,
+            decodeBackupZip(ByteArrayInputStream(bytes)).data
+        )
     }
 
     private fun completeBackupData() = BackupData(

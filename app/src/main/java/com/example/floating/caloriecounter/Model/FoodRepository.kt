@@ -5,6 +5,7 @@ import com.example.floating.caloriecounter.backup.TotalsBackup
 import com.example.floating.caloriecounter.backup.WeightEntryBackup
 import com.example.floating.caloriecounter.backup.WorkoutEntryBackup
 import com.example.floating.caloriecounter.backup.WorkoutNameBackup
+import com.example.floating.caloriecounter.backup.withGeneratedMissingPrimaryKeys
 import io.realm.kotlin.Realm
 import io.realm.kotlin.RealmConfiguration
 import io.realm.kotlin.dynamic.DynamicMutableRealmObject
@@ -87,7 +88,7 @@ class FoodRepository : AutoCloseable {
                 ),
             workoutNames = query<WorkoutName>().find().map(WorkoutName::toBackupModel)
                 .sortedWith(compareBy<WorkoutNameBackup> { it.lastUsed }.thenBy { it.name })
-        )
+        ).withGeneratedMissingPrimaryKeys()
     }
 
     /** Replaces all app data atomically after the archive has been decoded and validated. */
