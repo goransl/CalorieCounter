@@ -30,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.ExpandLess
@@ -40,7 +41,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -58,6 +58,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -70,10 +71,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -81,7 +84,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.zIndex
 import com.example.floating.caloriecounter.Model.FoodRepository
 import com.example.floating.caloriecounter.Model.WorkoutDaySummary
@@ -104,6 +107,9 @@ private enum class WorkoutView(val title: String) {
     History("History")
 }
 
+private const val WORKOUT_HISTORY_PAGE_SIZE = 30
+private val restPresets = listOf("1:30 min", "2 min", "2:30 min", "3 min", "4 min")
+
 private data class WorkoutSetDraft(
     val weight: String = "",
     val reps: String = "",
@@ -125,6 +131,8 @@ fun WorkoutScreen(
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
     var dayEntries by remember { mutableStateOf(emptyList<WorkoutEntrySnapshot>()) }
     var historyEntries by remember { mutableStateOf(emptyList<WorkoutEntrySnapshot>()) }
+    var historyHasMore by remember { mutableStateOf(false) }
+    var isHistoryLoading by remember { mutableStateOf(false) }
     var searchText by remember { mutableStateOf("") }
     var showSearchSuggestions by remember { mutableStateOf(false) }
     var historyProgressExerciseName by remember { mutableStateOf<String?>(null) }
@@ -150,11 +158,21 @@ fun WorkoutScreen(
         dayEntries = repository.getWorkoutEntriesForDate(selectedDateMillis)
     }
 
-    LaunchedEffect(searchText, refreshTrigger, dataRevision) {
-        historyEntries = repository.getWorkoutEntriesNewestFirst(
+    LaunchedEffect(selectedView, searchText, refreshTrigger, dataRevision) {
+        if (selectedView != WorkoutView.History) return@LaunchedEffect
+
+        isHistoryLoading = true
+        historyEntries = emptyList()
+        historyHasMore = false
+        val page = repository.getWorkoutHistoryPage(
             searchQuery = searchText,
-            completedOnly = true
+            completedOnly = true,
+            offset = 0,
+            limit = WORKOUT_HISTORY_PAGE_SIZE
         )
+        historyEntries = page.entries
+        historyHasMore = page.hasMore
+        isHistoryLoading = false
     }
 
     LaunchedEffect(progressExerciseName, refreshTrigger, dataRevision) {
@@ -290,6 +308,8 @@ fun WorkoutScreen(
                     searchText = searchText,
                     onSearchTextChange = {
                         searchText = it
+                        historyEntries = emptyList()
+                        historyHasMore = false
                         historyProgressExerciseName = null
                         showSearchSuggestions = it.trim().length >= 2
                     },
@@ -298,6 +318,8 @@ fun WorkoutScreen(
                     onSuggestionsDismissed = { showSearchSuggestions = false },
                     onSuggestionSelected = {
                         searchText = it
+                        historyEntries = emptyList()
+                        historyHasMore = false
                         historyProgressExerciseName = it
                         showSearchSuggestions = false
                     },
@@ -308,6 +330,22 @@ fun WorkoutScreen(
                         scope.launch {
                             withContext(Dispatchers.IO) { repository.deleteWorkoutName(name) }
                             refreshTrigger++
+                        }
+                    },
+                    hasMore = historyHasMore,
+                    isLoading = isHistoryLoading,
+                    onLoadMore = {
+                        if (historyHasMore && !isHistoryLoading) {
+                            isHistoryLoading = true
+                            val page = repository.getWorkoutHistoryPage(
+                                searchQuery = searchText,
+                                completedOnly = true,
+                                offset = historyEntries.size,
+                                limit = WORKOUT_HISTORY_PAGE_SIZE
+                            )
+                            historyEntries = (historyEntries + page.entries).distinctBy { it.id }
+                            historyHasMore = page.hasMore
+                            isHistoryLoading = false
                         }
                     },
                     onEdit = { entry ->
@@ -675,12 +713,34 @@ private fun WorkoutHistoryView(
     onSuggestionsDismissed: () -> Unit,
     onSuggestionSelected: (String) -> Unit,
     onSuggestionDeleted: (String) -> Unit,
+    hasMore: Boolean,
+    isLoading: Boolean,
+    onLoadMore: () -> Unit,
     onEdit: (WorkoutEntrySnapshot) -> Unit,
     progressExerciseName: String?,
     onViewProgress: (String) -> Unit
 ) {
+    BackHandler(enabled = suggestions.isNotEmpty()) {
+        onSuggestionsDismissed()
+    }
+
+    val listState = rememberLazyListState()
+    val dropdownMaxHeight = LocalConfiguration.current.screenHeightDp.dp
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val layoutInfo = listState.layoutInfo
+            val lastVisibleIndex = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            layoutInfo.totalItemsCount > 0 && lastVisibleIndex >= layoutInfo.totalItemsCount - 4
+        }
+    }
+    LaunchedEffect(shouldLoadMore, hasMore, isLoading, suggestions) {
+        if (suggestions.isEmpty() && shouldLoadMore && hasMore && !isLoading) {
+            onLoadMore()
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp)
@@ -690,33 +750,27 @@ private fun WorkoutHistoryView(
                 onValueChange = onSearchTextChange,
                 label = { Text("Search completed exercise") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            DropdownMenu(
-                expanded = suggestions.isNotEmpty(),
-                onDismissRequest = onSuggestionsDismissed,
-                properties = PopupProperties(focusable = false),
-                modifier = Modifier.fillMaxWidth(0.9f)
-            ) {
-                suggestions.forEach { suggestion ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSuggestionSelected(suggestion) }
-                            .padding(start = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(suggestion, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { onSuggestionDeleted(suggestion) }) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Delete suggestion",
-                                tint = MaterialTheme.colorScheme.error
-                            )
+                modifier = Modifier.fillMaxWidth(),
+                trailingIcon = if (searchText.isNotBlank()) {
+                    {
+                        IconButton(onClick = { onSearchTextChange("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear search")
                         }
                     }
+                } else {
+                    null
                 }
-            }
+            )
+        }
+
+        if (suggestions.isNotEmpty()) {
+            SuggestionDropdown(
+                suggestions = suggestions,
+                onDismiss = onSuggestionsDismissed,
+                onSuggestionSelected = onSuggestionSelected,
+                onSuggestionDeleted = onSuggestionDeleted,
+                maxHeight = dropdownMaxHeight
+            )
         }
 
         if (
@@ -761,12 +815,24 @@ private fun WorkoutHistoryView(
         }
 
         if (entries.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No completed exercises found.")
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator()
+                } else {
+                    Text("No completed exercises found.")
+                }
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) {
                 items(entries, key = { it.id }) { entry ->
@@ -800,6 +866,83 @@ private fun WorkoutHistoryView(
                         }
                     }
                 }
+                if (isLoading) {
+                    item(key = "history_loading") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SuggestionDropdown(
+    suggestions: List<String>,
+    onDismiss: () -> Unit,
+    onSuggestionSelected: (String) -> Unit,
+    onSuggestionDeleted: ((String) -> Unit)? = null,
+    maxHeight: Dp,
+    containerColor: Color = MaterialTheme.colorScheme.surfaceVariant,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = maxHeight),
+        colors = CardDefaults.cardColors(
+            containerColor = containerColor
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = maxHeight)
+                .verticalScroll(rememberScrollState())
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 12.dp, top = 4.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Suggestions",
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close suggestions")
+                }
+            }
+            suggestions.forEach { suggestion ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onSuggestionSelected(suggestion) }
+                        .padding(start = 12.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(suggestion, modifier = Modifier.weight(1f))
+                    onSuggestionDeleted?.let { onDelete ->
+                        IconButton(onClick = { onDelete(suggestion) }) {
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Delete suggestion",
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -817,6 +960,7 @@ private fun WorkoutEntryDialog(
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val dropdownMaxHeight = LocalConfiguration.current.screenHeightDp.dp
     var name by remember(entry?.id) { mutableStateOf(entry?.name ?: "") }
     var notes by remember(entry?.id) { mutableStateOf(entry?.notes ?: "") }
     var date by remember(entry?.id, initialDate) {
@@ -850,8 +994,13 @@ private fun WorkoutEntryDialog(
     val nameSuggestions = remember(name, nameRefreshTrigger) {
         if (name.trim().length >= 2) repository.getWorkoutNameSuggestions(name) else emptyList()
     }
+    val isNameSuggestionDropdownVisible = showNameSuggestions && nameSuggestions.isNotEmpty()
     val canViewProgress = remember(entry?.id) {
         entry?.name?.let(repository::hasCompletedWorkoutHistory) == true
+    }
+
+    BackHandler(enabled = isNameSuggestionDropdownVisible) {
+        showNameSuggestions = false
     }
 
     val openDatePicker = {
@@ -963,9 +1112,13 @@ private fun WorkoutEntryDialog(
         title = { Text(if (entry == null) "Add exercise" else "Edit exercise") },
         text = {
             Column(
-                modifier = Modifier
-                    .heightIn(max = 560.dp)
-                    .verticalScroll(rememberScrollState())
+                modifier = if (isNameSuggestionDropdownVisible) {
+                    Modifier.heightIn(max = dropdownMaxHeight)
+                } else {
+                    Modifier
+                        .heightIn(max = 560.dp)
+                        .verticalScroll(rememberScrollState())
+                }
             ) {
                 errorMessage?.let {
                     Text(
@@ -975,86 +1128,79 @@ private fun WorkoutEntryDialog(
                     )
                 }
 
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    TextField(
-                        value = name,
-                        onValueChange = {
-                            name = it
-                            showNameSuggestions = it.trim().length >= 2
-                        },
-                        label = { Text("Exercise name") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Words,
-                            keyboardType = KeyboardType.Text,
-                            imeAction = ImeAction.Next
-                        )
-                    )
-                    DropdownMenu(
-                        expanded = showNameSuggestions && nameSuggestions.isNotEmpty(),
-                        onDismissRequest = { showNameSuggestions = false },
-                        properties = PopupProperties(focusable = false),
-                        modifier = Modifier.fillMaxWidth(0.9f)
-                    ) {
-                        nameSuggestions.forEach { suggestion ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        name = suggestion
-                                        if (entry == null) {
-                                            repository.getLatestWorkoutEntryByName(suggestion)?.let { latest ->
-                                                notes = latest.notes
-                                                supersetGroupId = latest.supersetGroupId
-                                                val previousSets = latest.sets.map { set ->
-                                                    WorkoutSetDraft(
-                                                        weight = formatWeightInput(set.weightKg),
-                                                        reps = formatRepsInput(set.reps),
-                                                        rest = set.rest.ifBlank {
-                                                            if (set.restSeconds > 0) {
-                                                                set.restSeconds.toString()
-                                                            } else {
-                                                                ""
-                                                            }
-                                                        },
-                                                        notes = set.notes
-                                                    )
-                                                }
-                                                setDrafts.clear()
-                                                if (previousSets.isEmpty()) {
-                                                    setDrafts.add(WorkoutSetDraft())
-                                                } else {
-                                                    setDrafts.addAll(previousSets)
-                                                }
-                                            }
-                                        }
-                                        showNameSuggestions = false
-                                    }
-                                    .padding(start = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(suggestion, modifier = Modifier.weight(1f))
-                                IconButton(
-                                    onClick = {
-                                        scope.launch {
-                                            withContext(Dispatchers.IO) {
-                                                repository.deleteWorkoutName(suggestion)
-                                            }
-                                            nameRefreshTrigger++
-                                        }
-                                    }
-                                ) {
-                                    Icon(
-                                        Icons.Default.Delete,
-                                        contentDescription = "Delete suggestion",
-                                        tint = MaterialTheme.colorScheme.error
-                                    )
-                                }
+                TextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        showNameSuggestions = it.trim().length >= 2
+                    },
+                    label = { Text("Exercise name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    trailingIcon = if (name.isNotBlank()) {
+                        {
+                            IconButton(onClick = {
+                                name = ""
+                                showNameSuggestions = false
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear exercise name")
                             }
                         }
-                    }
-                }
+                    } else {
+                        null
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words,
+                        keyboardType = KeyboardType.Text,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                if (isNameSuggestionDropdownVisible) {
+                    Spacer(Modifier.height(4.dp))
+                    SuggestionDropdown(
+                        suggestions = nameSuggestions,
+                        onDismiss = { showNameSuggestions = false },
+                        onSuggestionSelected = { suggestion ->
+                            name = suggestion
+                            if (entry == null) {
+                                repository.getLatestWorkoutEntryByName(suggestion)?.let { latest ->
+                                    notes = latest.notes
+                                    supersetGroupId = latest.supersetGroupId
+                                    val previousSets = latest.sets.map { set ->
+                                        WorkoutSetDraft(
+                                            weight = formatWeightInput(set.weightKg),
+                                            reps = formatRepsInput(set.reps),
+                                            rest = set.rest.ifBlank {
+                                                if (set.restSeconds > 0) {
+                                                    set.restSeconds.toString()
+                                                } else {
+                                                    ""
+                                                }
+                                            },
+                                            notes = set.notes
+                                        )
+                                    }
+                                    setDrafts.clear()
+                                    if (previousSets.isEmpty()) {
+                                        setDrafts.add(WorkoutSetDraft())
+                                    } else {
+                                        setDrafts.addAll(previousSets)
+                                    }
+                                }
+                            }
+                            showNameSuggestions = false
+                        },
+                        onSuggestionDeleted = { suggestion ->
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    repository.deleteWorkoutName(suggestion)
+                                }
+                                nameRefreshTrigger++
+                            }
+                        },
+                        maxHeight = dropdownMaxHeight
+                    )
+                } else {
 
                 Spacer(Modifier.height(8.dp))
                 OutlinedButton(
@@ -1133,6 +1279,7 @@ private fun WorkoutEntryDialog(
                 Text("Sets", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(6.dp))
                 WorkoutSetsEditor(setDrafts)
+                }
             }
         }
     )
@@ -1140,6 +1287,12 @@ private fun WorkoutEntryDialog(
 
 @Composable
 private fun WorkoutSetsEditor(setDrafts: SnapshotStateList<WorkoutSetDraft>) {
+    var restSuggestionsForSet by remember { mutableStateOf<Int?>(null) }
+
+    BackHandler(enabled = restSuggestionsForSet != null) {
+        restSuggestionsForSet = null
+    }
+
     Column {
         setDrafts.forEachIndexed { index, set ->
             Card(
@@ -1156,7 +1309,10 @@ private fun WorkoutSetsEditor(setDrafts: SnapshotStateList<WorkoutSetDraft>) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Set ${index + 1}", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        IconButton(onClick = { setDrafts.removeAt(index) }) {
+                        IconButton(onClick = {
+                            restSuggestionsForSet = null
+                            setDrafts.removeAt(index)
+                        }) {
                             Icon(
                                 Icons.Default.Delete,
                                 contentDescription = "Delete set",
@@ -1206,11 +1362,50 @@ private fun WorkoutSetsEditor(setDrafts: SnapshotStateList<WorkoutSetDraft>) {
                         value = setDrafts[index].rest,
                         onValueChange = { value ->
                             setDrafts[index] = setDrafts[index].copy(rest = value)
+                            restSuggestionsForSet = index
                         },
                         label = { Text("Rest (90, 1:30 or 2 min)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { focusState ->
+                                if (focusState.isFocused) {
+                                    restSuggestionsForSet = index
+                                } else if (restSuggestionsForSet == index) {
+                                    restSuggestionsForSet = null
+                                }
+                            },
+                        singleLine = true,
+                        trailingIcon = if (setDrafts[index].rest.isNotBlank()) {
+                            {
+                                IconButton(
+                                    onClick = {
+                                        setDrafts[index] = setDrafts[index].copy(rest = "")
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Clear rest"
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
                     )
+
+                    if (restSuggestionsForSet == index) {
+                        Spacer(Modifier.height(4.dp))
+                        SuggestionDropdown(
+                            suggestions = restPresets,
+                            onDismiss = { restSuggestionsForSet = null },
+                            onSuggestionSelected = { preset ->
+                                setDrafts[index] = setDrafts[index].copy(rest = preset)
+                                restSuggestionsForSet = null
+                            },
+                            maxHeight = 300.dp,
+                            containerColor = MaterialTheme.colorScheme.surface
+                        )
+                    }
 
                     Spacer(Modifier.height(6.dp))
                     OutlinedTextField(

@@ -17,7 +17,6 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
@@ -27,11 +26,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -46,6 +44,7 @@ import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fastfood
 import androidx.compose.material.icons.filled.FitnessCenter
@@ -85,11 +84,13 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -245,6 +246,7 @@ fun AddFoodDialog(
     val focusManager = LocalFocusManager.current
     val focusSink = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val dropdownMaxHeight = LocalConfiguration.current.screenHeightDp.dp
 
     val weightFocusRequester = FocusRequester()
     val caloriesFocusRequester = FocusRequester()
@@ -270,6 +272,11 @@ fun AddFoodDialog(
     // Dynamically recompute suggestions
     val suggestions = remember(name, refreshTrigger) {
         if (name.length >= 2) repository.getSuggestions(name) else emptyList()
+    }
+    val isSuggestionDropdownVisible = showSuggestions && suggestions.isNotEmpty()
+
+    BackHandler(enabled = isSuggestionDropdownVisible) {
+        showSuggestions = false
     }
 
 
@@ -370,7 +377,13 @@ fun AddFoodDialog(
         },
         title = { Text("Add Food") },
         text = {
-            Column {
+            Column(
+                modifier = if (isSuggestionDropdownVisible) {
+                    Modifier.heightIn(max = dropdownMaxHeight)
+                } else {
+                    Modifier
+                }
+            ) {
                 // Hidden focus sink used to move focus away from text fields.
                 Box(
                     Modifier
@@ -387,93 +400,71 @@ fun AddFoodDialog(
                     )
                 }
 
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    Column {
-                        // TextField for Name
-                        TextField(
-                            value = name,
-                            onValueChange = {
-                                name = it
-                                showSuggestions = it.length >= 2 && suggestions.isNotEmpty()
-                            },
-                            label = { Text("Name") },
-                            modifier = Modifier.fillMaxWidth(),
-                            keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Next),
-                            keyboardActions = KeyboardActions(onNext = {
-                                weightFocusRequester.requestFocus()
-                            })
-                        )
-
-                        // Display suggestions below the TextField
-                        if (showSuggestions) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(MaterialTheme.colorScheme.surface)
-                                    .padding(vertical = 4.dp)
-                                    .defaultMinSize(minHeight = 56.dp)
-                            ) {
-                                suggestions.forEach { suggestion ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                // Fill fields and hide suggestions on click
-                                                name = suggestion
-                                                showSuggestions = false
-                                                val existingFood = repository.getFoodByName(suggestion)
-                                                if (existingFood != null) {
-                                                    weight = formatDecimal(existingFood.weight)
-                                                    calories = formatDecimal(existingFood.calories)
-                                                    proteins = formatDecimal(existingFood.proteins)
-                                                    fat = formatDecimal(existingFood.fat)
-                                                    carbs = formatDecimal(existingFood.carbs)
-                                                    price = if (existingFood.price > 0f) formatMoney2(existingFood.price) else ""
-                                                    priceGrams = if (existingFood.priceGrams > 0f) formatDecimal(existingFood.priceGrams) else "1000"
-
-                                                }
-
-                                                // Move focus away, then hide the keyboard.
-                                                focusSink.requestFocus()
-                                                focusManager.clearFocus(force = true)
-                                                keyboardController?.hide()
-
-                                                /*// NEW: mark as used for sorting
-                                                scope.launch {
-                                                    repository.touchFood(suggestion)
-                                                    refreshTrigger++    // keep your refresh mechanism
-                                                }*/
-                                            }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = suggestion,
-                                            modifier = Modifier.weight(1f),
-                                            maxLines = 1
-                                        )
-                                        IconButton(
-                                            onClick = {
-                                                scope.launch {
-                                                    repository.deleteFood(suggestion) // Delete from database
-                                                    refreshTrigger++ // Refresh suggestions
-                                                }
-                                            }
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "Delete",
-                                                tint = MaterialTheme.colorScheme.error
-                                            )
-                                        }
-                                    }
-                                }
+                TextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        showSuggestions = it.trim().length >= 2
+                    },
+                    label = { Text("Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    trailingIcon = if (name.isNotBlank()) {
+                        {
+                            IconButton(onClick = {
+                                name = ""
+                                showSuggestions = false
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear name")
                             }
                         }
-                    }
-                }
+                    } else {
+                        null
+                    },
+                    keyboardOptions = KeyboardOptions.Default.copy(
+                        capitalization = KeyboardCapitalization.Words,
+                        imeAction = ImeAction.Next
+                    ),
+                    keyboardActions = KeyboardActions(onNext = {
+                        weightFocusRequester.requestFocus()
+                    })
+                )
 
+                if (isSuggestionDropdownVisible) {
+                    Spacer(Modifier.height(4.dp))
+                    SuggestionDropdown(
+                        suggestions = suggestions,
+                        onDismiss = { showSuggestions = false },
+                        onSuggestionSelected = { suggestion ->
+                            name = suggestion
+                            showSuggestions = false
+                            repository.getFoodByName(suggestion)?.let { existingFood ->
+                                weight = formatDecimal(existingFood.weight)
+                                calories = formatDecimal(existingFood.calories)
+                                proteins = formatDecimal(existingFood.proteins)
+                                fat = formatDecimal(existingFood.fat)
+                                carbs = formatDecimal(existingFood.carbs)
+                                price = if (existingFood.price > 0f) formatMoney2(existingFood.price) else ""
+                                priceGrams = if (existingFood.priceGrams > 0f) {
+                                    formatDecimal(existingFood.priceGrams)
+                                } else {
+                                    "1000"
+                                }
+                            }
+
+                            focusSink.requestFocus()
+                            focusManager.clearFocus(force = true)
+                            keyboardController?.hide()
+                        },
+                        onSuggestionDeleted = { suggestion ->
+                            scope.launch {
+                                repository.deleteFood(suggestion)
+                                refreshTrigger++
+                            }
+                        },
+                        maxHeight = dropdownMaxHeight
+                    )
+                } else {
                 // Inputs with 8dp margin between them
                 Spacer(modifier = Modifier.height(8.dp))
                 DecimalOnlyTextField(
@@ -540,6 +531,7 @@ fun AddFoodDialog(
                         modifier = Modifier.weight(1f),
                         imeAction = ImeAction.Done
                     )
+                }
                 }
             }
         }

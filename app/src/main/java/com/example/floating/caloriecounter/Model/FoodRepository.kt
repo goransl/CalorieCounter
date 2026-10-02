@@ -649,6 +649,57 @@ class FoodRepository : AutoCloseable {
             .map { it.toSnapshot() }
     }
 
+    /**
+     * Loads just one page of the history.  Realm applies the sort and limit before the objects
+     * are copied to UI state, so the History tab does not read every matching workout at once.
+     */
+    fun getWorkoutHistoryPage(
+        searchQuery: String,
+        completedOnly: Boolean = true,
+        offset: Int,
+        limit: Int
+    ): WorkoutHistoryPage {
+        require(offset >= 0) { "Offset must not be negative." }
+        require(limit > 0) { "Limit must be greater than zero." }
+
+        val trimmed = searchQuery.trim()
+        var results = if (completedOnly) {
+            realm.query<WorkoutEntry>("completed == $0", true)
+        } else {
+            realm.query<WorkoutEntry>()
+        }
+        if (trimmed.isNotEmpty()) {
+            val words = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            results = results.query("name CONTAINS[c] $0", words.first())
+            words.drop(1).forEach { word ->
+                results = results.query("name CONTAINS[c] $0", word)
+            }
+        }
+
+        // Fetch one extra row to determine whether the next page exists.
+        val fetchLimit = (offset.toLong() + limit + 1)
+            .coerceAtMost(Int.MAX_VALUE.toLong())
+            .toInt()
+        val loaded = results
+            .sort(
+                "dateMillis" to Sort.DESCENDING,
+                "position" to Sort.ASCENDING,
+                "updatedAt" to Sort.DESCENDING,
+                "id" to Sort.ASCENDING
+            )
+            .limit(fetchLimit)
+            .find()
+        val pageEntries = loaded
+            .drop(offset)
+            .take(limit)
+            .map { it.toSnapshot() }
+
+        return WorkoutHistoryPage(
+            entries = pageEntries,
+            hasMore = loaded.size > offset + pageEntries.size
+        )
+    }
+
     fun getCompletedWorkoutEntriesForExercise(name: String): List<WorkoutEntrySnapshot> {
         val normalizedName = name.trim()
         if (normalizedName.isEmpty()) return emptyList()
@@ -768,6 +819,7 @@ class FoodRepository : AutoCloseable {
         val workoutHistoryComparator = compareByDescending<WorkoutEntry> { it.dateMillis }
             .thenBy { it.position }
             .thenByDescending { it.updatedAt }
+            .thenBy { it.id }
     }
 
 }

@@ -35,6 +35,12 @@ data class WorkoutEntrySnapshot(
     val updatedAt: Long
 )
 
+/** One incrementally loaded page of completed workout history. */
+data class WorkoutHistoryPage(
+    val entries: List<WorkoutEntrySnapshot>,
+    val hasMore: Boolean
+)
+
 /** Detached summary used by the copy-workout picker. */
 data class WorkoutDaySummary(
     val dateMillis: Long,
