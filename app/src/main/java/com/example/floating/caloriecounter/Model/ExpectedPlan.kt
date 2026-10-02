@@ -9,4 +9,11 @@ class ExpectedPlan : RealmObject {
     var startDateMillis: Long = 0L
     var baselineWeightKg: Float = 0f
     var dailyDeltaKg: Float = 0f
+    var calculationMode: String = ExpectedPlanMode.DAILY_CHANGE
+    var weeklyLossPercent: Float = 0f
+}
+
+object ExpectedPlanMode {
+    const val DAILY_CHANGE = "daily_change"
+    const val WEEKLY_LOSS_PERCENT = "weekly_loss_percent"
 }

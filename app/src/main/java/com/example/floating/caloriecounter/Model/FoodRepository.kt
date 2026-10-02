@@ -29,7 +29,7 @@ class FoodRepository : AutoCloseable {
             WorkoutName::class
         )
     )
-        .schemaVersion(7)
+        .schemaVersion(11)
         .migration(
             AutomaticSchemaMigration { ctx ->
                 val oldVersion = ctx.oldRealm.schemaVersion()
@@ -56,6 +56,42 @@ class FoodRepository : AutoCloseable {
                         }
                     }
                 }
+
+                if (oldVersion < 8 && ctx.oldRealm.schema()["Totals"] != null) {
+                    var nextPosition = 0L
+                    ctx.enumerate(className = "Totals") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                        newObj?.set("position", nextPosition++)
+                    }
+                }
+
+                if (oldVersion < 9 && ctx.oldRealm.schema()["ExpectedPlan"] != null) {
+                    ctx.enumerate(className = "ExpectedPlan") { _: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                        newObj?.set("calculationMode", ExpectedPlanMode.DAILY_CHANGE)
+                        newObj?.set("weeklyLossPercent", 0f)
+                    }
+                }
+
+                if (oldVersion == 9L && ctx.oldRealm.schema()["ExpectedPlan"] != null) {
+                    ctx.enumerate(className = "ExpectedPlan") { oldObj: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                        if (oldObj.getValue<String>("calculationMode") == ExpectedPlanMode.WEEKLY_LOSS_PERCENT) {
+                            // Version 9 stored weekly loss as a positive number. It is now a signed change.
+                            newObj?.set("weeklyLossPercent", -oldObj.getValue<Float>("weeklyLossPercent"))
+                        }
+                    }
+                }
+
+                if (oldVersion < 11 && ctx.oldRealm.schema()["WorkoutEntry"] != null) {
+                    ctx.enumerate(className = "WorkoutEntry") { oldObj: DynamicRealmObject, newObj: DynamicMutableRealmObject? ->
+                        val oldSets = oldObj.getObjectList("sets")
+                        val newSets = newObj?.getObjectList("sets")
+                        oldSets.forEachIndexed { index, oldSet ->
+                            val newSet = newSets?.getOrNull(index) ?: return@forEachIndexed
+                            val weightKg = oldSet.getValue<Float>("weightKg")
+                            val reps = oldSet.getValue<Long>("reps").toInt()
+                            newSet.set("oneRepMaxKg", calculateOneRepMax(weightKg, reps))
+                        }
+                    }
+                }
             }
         )
         .build()
@@ -73,7 +109,11 @@ class FoodRepository : AutoCloseable {
         BackupData(
             foods = query<Food>().find().map(Food::toBackupModel).sortedBy { it.id },
             totals = query<Totals>().find().map(Totals::toBackupModel)
-                .sortedWith(compareBy<TotalsBackup> { it.timestamp }.thenBy { it.id }),
+                .sortedWith(
+                    compareBy<TotalsBackup> { it.timestamp }
+                        .thenBy { it.position }
+                        .thenBy { it.id }
+                ),
             expectedPlan = query<ExpectedPlan>("id == $0", "expected_plan_singleton")
                 .first()
                 .find()
@@ -108,6 +148,17 @@ class FoodRepository : AutoCloseable {
             data.totals.forEach { total ->
                 copyToRealm(total.toRealmModel())
             }
+            query<Totals>().find()
+                .groupBy { total ->
+                    java.time.Instant.ofEpochMilli(total.timestamp)
+                        .atZone(java.time.ZoneId.systemDefault())
+                        .toLocalDate()
+                }
+                .values
+                .forEach { dayTotals ->
+                    dayTotals.sortedWith(totalsDayComparator)
+                        .forEachIndexed { index, total -> total.position = index }
+                }
             data.expectedPlan?.let { plan ->
                 copyToRealm(plan.toRealmModel())
             }
@@ -224,7 +275,9 @@ class FoodRepository : AutoCloseable {
 
     fun getAllTotals(): List<Totals> {
         val (start, end) = getDayBounds()
-        return realm.query<Totals>("timestamp >= $0 AND timestamp < $1", start, end).find()
+        return realm.query<Totals>("timestamp >= $0 AND timestamp < $1", start, end)
+            .find()
+            .sortedWith(totalsDayComparator)
 
         //return realm.query<Totals>().find()
     }
@@ -232,6 +285,15 @@ class FoodRepository : AutoCloseable {
     // Save calculated totals to the Totals table
     suspend fun saveToTotals(name: String, calories: Float, proteins: Float, fat: Float, carbs: Float, weight: Float, dateMillis: Long, cost: Float = 0f) {
         realm.write {
+            val date = java.time.Instant.ofEpochMilli(dateMillis)
+                .atZone(java.time.ZoneId.systemDefault())
+                .toLocalDate()
+            val (start, end) = getDayBounds(date)
+            val nextPosition = query<Totals>("timestamp >= $0 AND timestamp < $1", start, end)
+                .find()
+                .maxOfOrNull { it.position }
+                ?.plus(1)
+                ?: 0
             copyToRealm(Totals().apply {
                 this.id = UUID.randomUUID().toString() // Generate a unique ID
                 this.name = name
@@ -242,6 +304,7 @@ class FoodRepository : AutoCloseable {
                 this.totalCarbs = carbs
                 //this.timestamp = System.currentTimeMillis() // save timestamp
                 this.timestamp = dateMillis // ← use selected date
+                this.position = nextPosition
                 this.included = true
                 this.cost = cost
             })
@@ -281,7 +344,15 @@ class FoodRepository : AutoCloseable {
         realm.write {
             val totalToDelete = query<Totals>("id == $0", id).first().find()
             if (totalToDelete != null) {
+                val date = java.time.Instant.ofEpochMilli(totalToDelete.timestamp)
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .toLocalDate()
                 delete(totalToDelete)
+                val (start, end) = getDayBounds(date)
+                query<Totals>("timestamp >= $0 AND timestamp < $1", start, end)
+                    .find()
+                    .sortedWith(totalsDayComparator)
+                    .forEachIndexed { index, total -> total.position = index }
             }
         }
     }
@@ -316,7 +387,9 @@ class FoodRepository : AutoCloseable {
 
     fun getAllTotalsForDate(date: java.time.LocalDate): List<Totals> {
         val (start, end) = getDayBounds(date)
-        return realm.query<Totals>("timestamp >= $0 AND timestamp < $1", start, end).find()
+        return realm.query<Totals>("timestamp >= $0 AND timestamp < $1", start, end)
+            .find()
+            .sortedWith(totalsDayComparator)
     }
 
     fun getAggregatedTotalsForDate(date: java.time.LocalDate): Totals {
@@ -331,26 +404,35 @@ class FoodRepository : AutoCloseable {
         }
     }
 
-    // FoodRepository.kt
-    suspend fun copyTotalsToToday(ids: Set<String>) {
-        val now = System.currentTimeMillis()
+    suspend fun copyTotalsToDate(ids: List<String>, targetDate: java.time.LocalDate) {
+        val targetTimestamp = targetDate
+            .atStartOfDay(java.time.ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
         realm.write {
-            ids.forEach { id ->
-                val src = query<Totals>("id == $0", id).first().find()
-                if (src != null) {
-                    copyToRealm(Totals().apply {
-                        this.id = java.util.UUID.randomUUID().toString()
-                        this.name = src.name
-                        this.weight = src.weight
-                        this.totalCalories = src.totalCalories
-                        this.totalProteins = src.totalProteins
-                        this.totalFat = src.totalFat
-                        this.totalCarbs = src.totalCarbs
-                        this.timestamp = now // ← copies to "today"
-                        this.included = src.included
-                        this.cost = src.cost          // ✅ NEW: includes price-derived value
-                    })
-                }
+            val sources = ids.distinct()
+                .mapNotNull { id -> query<Totals>("id == $0", id).first().find() }
+                .sortedWith(totalsDayComparator)
+            val (start, end) = getDayBounds(targetDate)
+            var nextPosition = query<Totals>("timestamp >= $0 AND timestamp < $1", start, end)
+                .find()
+                .maxOfOrNull { it.position }
+                ?.plus(1)
+                ?: 0
+            sources.forEach { src ->
+                copyToRealm(Totals().apply {
+                    this.id = java.util.UUID.randomUUID().toString()
+                    this.name = src.name
+                    this.weight = src.weight
+                    this.totalCalories = src.totalCalories
+                    this.totalProteins = src.totalProteins
+                    this.totalFat = src.totalFat
+                    this.totalCarbs = src.totalCarbs
+                    this.timestamp = targetTimestamp
+                    this.position = nextPosition++
+                    this.included = src.included
+                    this.cost = src.cost
+                })
             }
         }
     }
@@ -391,11 +473,41 @@ class FoodRepository : AutoCloseable {
     fun getAllWeightsAscending(): List<WeightEntry> =
         realm.query<WeightEntry>().sort("timestamp", Sort.ASCENDING).find()
 
+    fun getWeightsForDateRange(
+        startDate: java.time.LocalDate,
+        endDate: java.time.LocalDate
+    ): List<WeightEntry> {
+        val startMillis = startDate.atStartOfDay(java.time.ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+        val endExclusiveMillis = endDate.plusDays(1)
+            .atStartOfDay(java.time.ZoneId.systemDefault())
+            .toInstant()
+            .toEpochMilli()
+        return realm.query<WeightEntry>(
+            "timestamp >= $0 AND timestamp < $1",
+            startMillis,
+            endExclusiveMillis
+        ).sort("timestamp", Sort.ASCENDING).find()
+    }
+
+    fun getOldestWeight(): WeightEntry? =
+        realm.query<WeightEntry>().sort("timestamp", Sort.ASCENDING).first().find()
+
+    fun getNewestWeight(): WeightEntry? =
+        realm.query<WeightEntry>().sort("timestamp", Sort.DESCENDING).first().find()
+
     // Expected-plan API
     fun getExpectedPlan(): ExpectedPlan? =
         realm.query<ExpectedPlan>("id == $0", "expected_plan_singleton").first().find()
 
-    suspend fun setExpectedPlan(startMillis: Long, baseline: Float, dailyDelta: Float) {
+    suspend fun setExpectedPlan(
+        startMillis: Long,
+        baseline: Float,
+        dailyDelta: Float,
+        calculationMode: String,
+        weeklyLossPercent: Float
+    ) {
         realm.write {
             query<ExpectedPlan>().find().forEach { delete(it) }
             copyToRealm(ExpectedPlan().apply {
@@ -403,6 +515,8 @@ class FoodRepository : AutoCloseable {
                 startDateMillis = startMillis   // ← no clash now
                 baselineWeightKg = baseline
                 dailyDeltaKg = dailyDelta
+                this.calculationMode = calculationMode
+                this.weeklyLossPercent = weeklyLossPercent
             })
         }
     }
@@ -416,6 +530,21 @@ class FoodRepository : AutoCloseable {
             query<Totals>("id == $0", id).first().find()?.let {
                 it.included = included
             }
+        }
+    }
+
+    suspend fun reorderTotals(date: java.time.LocalDate, orderedIds: List<String>) {
+        val (start, end) = getDayBounds(date)
+        realm.write {
+            val existing = query<Totals>("timestamp >= $0 AND timestamp < $1", start, end)
+                .find()
+                .sortedWith(totalsDayComparator)
+            val byId = existing.associateBy { it.id }
+            val ordered = buildList<Totals> {
+                orderedIds.distinct().forEach { id -> byId[id]?.let { add(it) } }
+                existing.forEach { total -> if (none { it.id == total.id }) add(total) }
+            }
+            ordered.forEachIndexed { index, total -> total.position = index }
         }
     }
 
@@ -605,6 +734,11 @@ class FoodRepository : AutoCloseable {
                         sets.add(WorkoutSet().apply {
                             weightKg = if (includeDetails) originalSet.weightKg else 0f
                             reps = if (includeDetails) originalSet.reps else 0
+                            oneRepMaxKg = if (includeDetails) {
+                                calculateOneRepMax(originalSet.weightKg, originalSet.reps)
+                            } else {
+                                0f
+                            }
                             rest = if (includeDetails) originalSet.rest else ""
                             restSeconds = if (includeDetails) originalSet.restSeconds else 0
                             notes = if (includeDetails) originalSet.notes else ""
@@ -781,6 +915,7 @@ class FoodRepository : AutoCloseable {
     private fun WorkoutSetInput.toRealmSet() = WorkoutSet().apply {
         weightKg = this@toRealmSet.weightKg
         reps = this@toRealmSet.reps
+        oneRepMaxKg = calculateOneRepMax(weightKg, reps)
         rest = this@toRealmSet.rest.trimEnd()
         restSeconds = if (this@toRealmSet.restSeconds > 0) {
             this@toRealmSet.restSeconds
@@ -809,10 +944,14 @@ class FoodRepository : AutoCloseable {
         rest = rest,
         restSeconds = restSeconds,
         notes = notes,
-        completed = completed
+        completed = completed,
+        oneRepMaxKg = oneRepMaxKg
     )
 
     private companion object {
+        val totalsDayComparator = compareBy<Totals> { it.position }
+            .thenBy { it.timestamp }
+            .thenBy { it.id }
         val workoutDayComparator = compareBy<WorkoutEntry> { it.position }
             .thenBy { it.updatedAt }
             .thenBy { it.id }

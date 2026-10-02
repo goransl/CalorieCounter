@@ -164,6 +164,7 @@ fun decodeBackupZip(inputStream: InputStream): BackupArchive {
         }
     }
 
+    val decodedPlan = decodeExpectedPlan(entries.getValue(BACKUP_PLAN_FILE))
     val data = BackupData(
         foods = decodeJson(
             BACKUP_FOODS_FILE,
@@ -175,7 +176,14 @@ fun decodeBackupZip(inputStream: InputStream): BackupArchive {
             ListSerializer(TotalsBackup.serializer()),
             entries.getValue(BACKUP_TOTALS_FILE)
         ),
-        expectedPlan = decodeExpectedPlan(entries.getValue(BACKUP_PLAN_FILE)),
+        expectedPlan = decodedPlan?.let { plan ->
+            // Format 4 stored a positive weekly percentage as weight loss.
+            if (manifest?.formatVersion == 4 && plan.calculationMode == "weekly_loss_percent") {
+                plan.copy(weeklyLossPercent = -plan.weeklyLossPercent)
+            } else {
+                plan
+            }
+        },
         weights = decodeJson(
             BACKUP_WEIGHTS_FILE,
             ListSerializer(WeightEntryBackup.serializer()),
@@ -307,6 +315,13 @@ private fun validateBackupData(data: BackupData) {
         ensure(plan.id == "expected_plan_singleton") { "Expected plan has an invalid ID." }
         ensureFinite("expected plan baselineWeightKg", plan.baselineWeightKg)
         ensureFinite("expected plan dailyDeltaKg", plan.dailyDeltaKg)
+        ensureFinite("expected plan weeklyLossPercent", plan.weeklyLossPercent)
+        ensure(plan.calculationMode in setOf("daily_change", "weekly_loss_percent")) {
+            "Expected plan has an invalid calculation mode."
+        }
+        ensure(plan.weeklyLossPercent > -100f) {
+            "Expected plan weeklyLossPercent must be greater than -100."
+        }
     }
     data.foods.forEachIndexed { index, food ->
         ensureFinite("foods[$index].weight", food.weight)
@@ -318,6 +333,7 @@ private fun validateBackupData(data: BackupData) {
         ensureFinite("foods[$index].priceGrams", food.priceGrams)
     }
     data.totals.forEachIndexed { index, total ->
+        ensure(total.position >= 0) { "totals[$index].position cannot be negative." }
         ensureFinite("totals[$index].weight", total.weight)
         ensureFinite("totals[$index].totalCalories", total.totalCalories)
         ensureFinite("totals[$index].totalProteins", total.totalProteins)
@@ -332,6 +348,10 @@ private fun validateBackupData(data: BackupData) {
         ensure(entry.position >= 0) { "workoutEntries[$entryIndex].position cannot be negative." }
         entry.sets.forEachIndexed { setIndex, set ->
             ensureFinite("workoutEntries[$entryIndex].sets[$setIndex].weightKg", set.weightKg)
+            ensureFinite("workoutEntries[$entryIndex].sets[$setIndex].oneRepMaxKg", set.oneRepMaxKg)
+            ensure(set.oneRepMaxKg >= 0f) {
+                "workoutEntries[$entryIndex].sets[$setIndex].oneRepMaxKg cannot be negative."
+            }
             ensure(set.reps >= 0) {
                 "workoutEntries[$entryIndex].sets[$setIndex].reps cannot be negative."
             }

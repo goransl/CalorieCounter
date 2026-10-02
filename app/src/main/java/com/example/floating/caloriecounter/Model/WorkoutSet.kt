@@ -5,6 +5,8 @@ import io.realm.kotlin.types.EmbeddedRealmObject
 class WorkoutSet : EmbeddedRealmObject {
     var weightKg: Float = 0f
     var reps: Int = 0
+    /** Estimated one-repetition maximum calculated with the Epley formula. */
+    var oneRepMaxKg: Float = 0f
     /** Original free-form value is retained for compatibility with existing workouts. */
     var rest: String = ""
     /** Parsed rest duration for timers and future statistics; 0 means unspecified. */
@@ -20,7 +22,8 @@ data class WorkoutSetSnapshot(
     val rest: String,
     val restSeconds: Int,
     val notes: String,
-    val completed: Boolean
+    val completed: Boolean,
+    val oneRepMaxKg: Float = calculateOneRepMax(weightKg, reps)
 )
 
 /** Immutable input used by the UI and repository so Realm objects never escape a write. */
@@ -32,6 +35,14 @@ data class WorkoutSetInput(
     val notes: String = "",
     val completed: Boolean = false
 )
+
+/** Epley estimate: weight x (1 + reps / 30). Zero means the set has insufficient data. */
+fun calculateOneRepMax(weightKg: Float, reps: Int): Float =
+    if (weightKg > 0f && reps > 0) {
+        weightKg * (1f + reps / 30f)
+    } else {
+        0f
+    }
 
 /** Converts common inputs such as `90`, `1:30`, `1:30 min`, `2 min` and `1m 30s` to seconds. */
 fun parseRestSeconds(value: String): Int {

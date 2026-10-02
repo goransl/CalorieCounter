@@ -4,7 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.util.UUID
 
-const val CURRENT_BACKUP_FORMAT_VERSION = 2
+const val CURRENT_BACKUP_FORMAT_VERSION = 6
 const val MIN_SUPPORTED_BACKUP_FORMAT_VERSION = 1
 
 @Serializable
@@ -38,6 +38,8 @@ data class TotalsBackup(
     val totalFat: Float = 0f,
     val totalCarbs: Float = 0f,
     val timestamp: Long = 0L,
+    // Missing in older backups; their rows are normalized during restore.
+    val position: Int = 0,
     // Old backups do not have this property. Their rows were included by default.
     val included: Boolean = true,
     val cost: Float = 0f
@@ -48,7 +50,9 @@ data class ExpectedPlanBackup(
     val id: String = "expected_plan_singleton",
     val startDateMillis: Long = 0L,
     val baselineWeightKg: Float = 0f,
-    val dailyDeltaKg: Float = 0f
+    val dailyDeltaKg: Float = 0f,
+    val calculationMode: String = "daily_change",
+    val weeklyLossPercent: Float = 0f
 )
 
 @Serializable
@@ -62,6 +66,7 @@ data class WeightEntryBackup(
 data class WorkoutSetBackup(
     val weightKg: Float = 0f,
     val reps: Int = 0,
+    val oneRepMaxKg: Float = 0f,
     val rest: String = "",
     val restSeconds: Int = 0,
     val notes: String = "",

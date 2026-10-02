@@ -43,6 +43,7 @@ internal fun Totals.toBackupModel() = TotalsBackup(
     totalFat = totalFat,
     totalCarbs = totalCarbs,
     timestamp = timestamp,
+    position = position,
     included = included,
     cost = cost
 )
@@ -56,6 +57,7 @@ internal fun TotalsBackup.toRealmModel() = Totals().also { total ->
     total.totalFat = totalFat
     total.totalCarbs = totalCarbs
     total.timestamp = timestamp
+    total.position = position
     total.included = included
     total.cost = cost
     total.totalCost = 0f // Aggregated UI-only value; recalculated from row costs.
@@ -65,7 +67,9 @@ internal fun ExpectedPlan.toBackupModel() = ExpectedPlanBackup(
     id = id,
     startDateMillis = startDateMillis,
     baselineWeightKg = baselineWeightKg,
-    dailyDeltaKg = dailyDeltaKg
+    dailyDeltaKg = dailyDeltaKg,
+    calculationMode = calculationMode,
+    weeklyLossPercent = weeklyLossPercent
 )
 
 internal fun ExpectedPlanBackup.toRealmModel() = ExpectedPlan().also { plan ->
@@ -73,6 +77,8 @@ internal fun ExpectedPlanBackup.toRealmModel() = ExpectedPlan().also { plan ->
     plan.startDateMillis = startDateMillis
     plan.baselineWeightKg = baselineWeightKg
     plan.dailyDeltaKg = dailyDeltaKg
+    plan.calculationMode = calculationMode
+    plan.weeklyLossPercent = weeklyLossPercent
 }
 
 internal fun WeightEntry.toBackupModel() = WeightEntryBackup(
@@ -100,6 +106,7 @@ internal fun WorkoutEntry.toBackupModel() = WorkoutEntryBackup(
         WorkoutSetBackup(
             weightKg = set.weightKg,
             reps = set.reps,
+            oneRepMaxKg = set.oneRepMaxKg,
             rest = set.rest,
             restSeconds = set.restSeconds,
             notes = set.notes,
@@ -121,6 +128,7 @@ internal fun WorkoutEntryBackup.toRealmModel() = WorkoutEntry().also { workout -
         workout.sets.add(WorkoutSet().also { workoutSet ->
             workoutSet.weightKg = set.weightKg
             workoutSet.reps = set.reps
+            workoutSet.oneRepMaxKg = calculateOneRepMax(set.weightKg, set.reps)
             workoutSet.rest = set.rest
             workoutSet.restSeconds = if (set.restSeconds > 0) {
                 set.restSeconds

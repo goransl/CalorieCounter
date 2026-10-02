@@ -13,6 +13,8 @@ class Totals : RealmObject {
     var totalFat: Float = 0f
     var totalCarbs: Float = 0f
     var timestamp: Long = System.currentTimeMillis()
+    /** Stable zero-based order inside a calorie day. */
+    var position: Int = 0
     var included: Boolean = true
     var cost: Float = 0f
     var totalCost: Float = 0f

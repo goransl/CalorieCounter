@@ -91,10 +91,13 @@ import com.example.floating.caloriecounter.Model.WorkoutDaySummary
 import com.example.floating.caloriecounter.Model.WorkoutEntrySnapshot
 import com.example.floating.caloriecounter.Model.WorkoutSetSnapshot
 import com.example.floating.caloriecounter.Model.WorkoutSetInput
+import com.example.floating.caloriecounter.Model.calculateOneRepMax
 import com.example.floating.caloriecounter.Model.parseRestSeconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.LocalDate
@@ -126,6 +129,7 @@ fun WorkoutScreen(
     isVisible: Boolean = true
 ) {
     val scope = rememberCoroutineScope()
+    val reorderMutex = remember { Mutex() }
     val context = LocalContext.current
     var selectedView by remember { mutableStateOf(WorkoutView.Day) }
     var selectedDate by remember { mutableStateOf(LocalDate.now()) }
@@ -296,10 +300,12 @@ fun WorkoutScreen(
                     },
                     onReorder = { orderedIds ->
                         scope.launch {
-                            withContext(Dispatchers.IO) {
-                                repository.reorderWorkoutEntries(selectedDateMillis, orderedIds)
+                            reorderMutex.withLock {
+                                withContext(Dispatchers.IO) {
+                                    repository.reorderWorkoutEntries(selectedDateMillis, orderedIds)
+                                }
+                                refreshTrigger++
                             }
-                            refreshTrigger++
                         }
                     }
                 )
@@ -434,7 +440,9 @@ private fun WorkoutDayView(
     onReorder: (List<String>) -> Unit
 ) {
     val listState = rememberLazyListState()
-    var orderedEntries by remember(entries) { mutableStateOf(entries) }
+    val orderedEntries = remember(entries) {
+        mutableStateListOf<WorkoutEntrySnapshot>().apply { addAll(entries) }
+    }
     var draggingEntryId by remember { mutableStateOf<String?>(null) }
     var initialDraggedOffset by remember { mutableFloatStateOf(0f) }
     var draggedDistance by remember { mutableFloatStateOf(0f) }
@@ -511,14 +519,20 @@ private fun WorkoutDayView(
                     } ?: 0f
 
                     WorkoutDayEntryCard(
+                        modifier = if (draggingEntryId == entry.id) {
+                            Modifier
+                        } else {
+                            Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null)
+                        },
                         entry = entry,
                         isDragging = draggingEntryId == entry.id,
                         dragTranslationY = dragTranslationY,
                         onClick = { onEdit(entry) },
                         onViewProgress = { onViewProgress(entry) },
                         onCompletedChange = { completed ->
-                            orderedEntries = orderedEntries.map { item ->
-                                if (item.id == entry.id) item.copy(completed = completed) else item
+                            val index = orderedEntries.indexOfFirst { it.id == entry.id }
+                            if (index >= 0) {
+                                orderedEntries[index] = orderedEntries[index].copy(completed = completed)
                             }
                             onToggleCompleted(entry, completed)
                         },
@@ -541,7 +555,11 @@ private fun WorkoutDayView(
                                 if (currentInfo != null && from >= 0) {
                                     val draggedCenter = initialDraggedOffset + draggedDistance +
                                         currentInfo.size / 2f
-                                    val direction = if (deltaY > 0f) 1 else -1
+                                    val direction = when {
+                                        deltaY > 0f -> 1
+                                        deltaY < 0f -> -1
+                                        else -> 0
+                                    }
                                     val to = from + direction
                                     val neighbour = orderedEntries.getOrNull(to)
                                     val neighbourInfo = neighbour?.let { candidate ->
@@ -552,15 +570,19 @@ private fun WorkoutDayView(
                                         if (direction > 0) {
                                             draggedCenter > neighbourCenter
                                         } else {
-                                            draggedCenter < neighbourCenter
+                                            direction < 0 && draggedCenter < neighbourCenter
                                         }
                                     } ?: false
 
                                     if (crossedNeighbour) {
-                                        orderedEntries = orderedEntries.toMutableList().apply {
-                                            val moved = removeAt(from)
-                                            add(to, moved)
-                                        }
+                                        val firstVisibleIndex = listState.firstVisibleItemIndex
+                                        val firstVisibleOffset = listState.firstVisibleItemScrollOffset
+                                        val moved = orderedEntries.removeAt(from)
+                                        orderedEntries.add(to, moved)
+                                        listState.requestScrollToItem(
+                                            firstVisibleIndex,
+                                            firstVisibleOffset
+                                        )
                                         movedDuringDrag = true
                                     }
                                 }
@@ -576,11 +598,18 @@ private fun WorkoutDayView(
                             if (shouldPersist) onReorder(reorderedIds)
                         },
                         onDragCancel = {
+                            val reorderedIds = orderedEntries.map { it.id }
+                            val shouldPersist = movedDuringDrag
                             draggingEntryId = null
                             initialDraggedOffset = 0f
                             draggedDistance = 0f
                             movedDuringDrag = false
-                            orderedEntries = entries
+                            if (shouldPersist) {
+                                onReorder(reorderedIds)
+                            } else {
+                                orderedEntries.clear()
+                                orderedEntries.addAll(entries)
+                            }
                         }
                     )
                 }
@@ -591,6 +620,7 @@ private fun WorkoutDayView(
 
 @Composable
 private fun WorkoutDayEntryCard(
+    modifier: Modifier = Modifier,
     entry: WorkoutEntrySnapshot,
     isDragging: Boolean,
     dragTranslationY: Float,
@@ -609,7 +639,7 @@ private fun WorkoutDayEntryCard(
     val currentOnDragCancel by rememberUpdatedState(onDragCancel)
 
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 5.dp)
             .then(
@@ -627,8 +657,8 @@ private fun WorkoutDayEntryCard(
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
                         currentOnDragStart()
                     },
-                    onDragEnd = currentOnDragEnd,
-                    onDragCancel = currentOnDragCancel,
+                    onDragEnd = { currentOnDragEnd() },
+                    onDragCancel = { currentOnDragCancel() },
                     onDrag = { change, dragAmount ->
                         change.consume()
                         currentOnDrag(dragAmount.y)
@@ -1295,6 +1325,10 @@ private fun WorkoutSetsEditor(setDrafts: SnapshotStateList<WorkoutSetDraft>) {
 
     Column {
         setDrafts.forEachIndexed { index, set ->
+            val estimatedOneRepMax = calculateOneRepMax(
+                set.weight.replace(',', '.').toFloatOrNull() ?: 0f,
+                set.reps.toIntOrNull() ?: 0
+            )
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1354,6 +1388,15 @@ private fun WorkoutSetsEditor(setDrafts: SnapshotStateList<WorkoutSetDraft>) {
                                 keyboardType = KeyboardType.Number,
                                 imeAction = ImeAction.Next
                             )
+                        )
+                    }
+
+                    if (estimatedOneRepMax > 0f) {
+                        Text(
+                            text = "Estimated 1RM: ${formatWeightDisplay(estimatedOneRepMax)} kg",
+                            modifier = Modifier.padding(top = 6.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
                         )
                     }
 

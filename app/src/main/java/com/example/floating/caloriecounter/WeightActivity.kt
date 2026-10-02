@@ -4,25 +4,26 @@ import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -30,16 +31,19 @@ import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.example.floating.caloriecounter.Model.ExpectedPlan
+import com.example.floating.caloriecounter.Model.ExpectedPlanMode
 import com.example.floating.caloriecounter.Model.FoodRepository
 import com.example.floating.caloriecounter.Model.WeightEntry
 import com.example.floating.caloriecounter.ui.theme.CalorieCounterTheme
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
+import kotlin.math.pow
+
+private const val WEIGHT_DATE_PAGE_SIZE = 50L
 
 class WeightActivity : ComponentActivity() {
     private lateinit var repository: FoodRepository
@@ -56,21 +60,32 @@ class WeightActivity : ComponentActivity() {
         setContent {
             CalorieCounterTheme {
                 val ctx = this
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .swipeToNavigate(
-                            onSwipeRight = {
-                                ctx.startActivity(Intent(ctx, MainActivity::class.java))
-                                (ctx as Activity).finish() // optional: close WeightActivity
-                            }
-                        )
-                ) {
-                    WeightTableScreen(
+                var showChart by rememberSaveable { mutableStateOf(false) }
+
+                if (showChart) {
+                    BackHandler { showChart = false }
+                    WeightChartScreen(
                         repository = repository,
-                        showBack = true,
-                        onBack = { (ctx as Activity).finish() }
+                        onBack = { showChart = false }
                     )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .swipeToNavigate(
+                                onSwipeRight = {
+                                    ctx.startActivity(Intent(ctx, MainActivity::class.java))
+                                    (ctx as Activity).finish()
+                                }
+                            )
+                    ) {
+                        WeightTableScreen(
+                            repository = repository,
+                            showBack = true,
+                            onBack = { (ctx as Activity).finish() },
+                            onShowChart = { showChart = true }
+                        )
+                    }
                 }
             }
         }
@@ -88,40 +103,115 @@ fun WeightTableScreen(
     repository: FoodRepository,
     showBack: Boolean = true,
     onBack: (() -> Unit)? = null,
+    onShowChart: (() -> Unit)? = null,
     contentPadding: PaddingValues = PaddingValues(0.dp),
     dataRevision: Int = 0
 ) {
+    var showEmbeddedChart by rememberSaveable { mutableStateOf(false) }
+    if (showEmbeddedChart) {
+        BackHandler { showEmbeddedChart = false }
+        WeightChartScreen(
+            repository = repository,
+            onBack = { showEmbeddedChart = false },
+            contentPadding = contentPadding,
+            dataRevision = dataRevision
+        )
+        return
+    }
+
+    val openChart = onShowChart ?: { showEmbeddedChart = true }
     val scope = rememberCoroutineScope()
     var weights by remember { mutableStateOf(emptyList<WeightEntry>()) }
     var plan by remember { mutableStateOf<ExpectedPlan?>(null) }
+    val today = remember { LocalDate.now() }
+    val initialStartDate = remember(today) { today.minusDays(WEIGHT_DATE_PAGE_SIZE) }
+    val initialEndDate = remember(today) { today.plusDays(WEIGHT_DATE_PAGE_SIZE) }
+    var loadedStartDate by remember { mutableStateOf(initialStartDate) }
+    var loadedEndDate by remember { mutableStateOf(initialEndDate) }
+    var oldestTrackedDate by remember { mutableStateOf<LocalDate?>(null) }
+    var newestTrackedDate by remember { mutableStateOf<LocalDate?>(null) }
+    var newestTrackedWeight by remember { mutableStateOf<Float?>(null) }
+    var initialScrollPending by remember { mutableStateOf(false) }
 
     var showWeightDialogForDate by remember { mutableStateOf<LocalDate?>(null) }
     var showExpectedDialogForDate by remember { mutableStateOf<LocalDate?>(null) }
 
-    // Load data
+    suspend fun refreshWeightMetadata() {
+        val oldest = repository.getOldestWeight()
+        val newest = repository.getNewestWeight()
+        oldestTrackedDate = oldest?.let { millisToDate(it.timestamp) }
+        newestTrackedDate = newest?.let { millisToDate(it.timestamp) }
+        newestTrackedWeight = newest?.weightKg
+    }
+
+    suspend fun refreshLoadedWeights() {
+        weights = repository.getWeightsForDateRange(loadedStartDate, loadedEndDate)
+        refreshWeightMetadata()
+    }
+
     LaunchedEffect(dataRevision) {
-        weights = repository.getAllWeightsAscending()
+        loadedStartDate = initialStartDate
+        loadedEndDate = initialEndDate
+        weights = repository.getWeightsForDateRange(initialStartDate, initialEndDate)
+        refreshWeightMetadata()
         plan = repository.getExpectedPlan()
+        initialScrollPending = true
     }
 
     // Map date -> weight
     val weightMap: Map<LocalDate, WeightEntry> = weights.associateBy { millisToDate(it.timestamp) }
 
 
-    val firstDate = (weightMap.keys.minOrNull() ?: LocalDate.now())
-    val today = LocalDate.now()
-    val endDate = today.plusMonths(12)
-    val allDates = generateSequence(firstDate) { it.plusDays(1) }
-        .takeWhile { !it.isAfter(endDate) }
-        .toList()
-
-    val listState = rememberLazyListState()
-    LaunchedEffect(allDates) {
-        val idx = allDates.indexOf(today)
-        if (idx >= 0) listState.scrollToItem(idx)
+    val allDates = remember(loadedStartDate, loadedEndDate) {
+        generateSequence(loadedStartDate) { it.plusDays(1) }
+            .takeWhile { !it.isAfter(loadedEndDate) }
+            .toList()
     }
 
-    val context = LocalContext.current
+    val listState = rememberLazyListState()
+    LaunchedEffect(initialScrollPending, allDates) {
+        if (!initialScrollPending) return@LaunchedEffect
+        val idx = allDates.indexOf(today)
+        if (idx >= 0) {
+            listState.scrollToItem(idx)
+            initialScrollPending = false
+        }
+    }
+
+    val nearStart by remember {
+        derivedStateOf { listState.firstVisibleItemIndex <= 5 }
+    }
+    val nearEnd by remember(allDates) {
+        derivedStateOf {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            lastVisible >= allDates.lastIndex - 5
+        }
+    }
+
+    LaunchedEffect(nearStart, initialScrollPending, loadedStartDate, oldestTrackedDate) {
+        val oldest = oldestTrackedDate ?: return@LaunchedEffect
+        if (initialScrollPending || !nearStart || !oldest.isBefore(loadedStartDate)) {
+            return@LaunchedEffect
+        }
+        val candidate = loadedStartDate.minusDays(WEIGHT_DATE_PAGE_SIZE)
+        val newStart = if (candidate.isBefore(oldest)) oldest else candidate
+        val additional = repository.getWeightsForDateRange(
+            newStart,
+            loadedStartDate.minusDays(1)
+        )
+        weights = (additional + weights).distinctBy { it.id }.sortedBy { it.timestamp }
+        loadedStartDate = newStart
+    }
+
+    LaunchedEffect(nearEnd, initialScrollPending, loadedEndDate) {
+        if (initialScrollPending || !nearEnd) {
+            return@LaunchedEffect
+        }
+        val newEnd = loadedEndDate.plusDays(WEIGHT_DATE_PAGE_SIZE)
+        val additional = repository.getWeightsForDateRange(loadedEndDate.plusDays(1), newEnd)
+        weights = (weights + additional).distinctBy { it.id }.sortedBy { it.timestamp }
+        loadedEndDate = newEnd
+    }
 
     Scaffold(
         topBar = {
@@ -134,6 +224,11 @@ fun WeightTableScreen(
                     }
                 },
                 title = { Text("Weight tracking", color = Color.White) },
+                actions = {
+                    TextButton(onClick = openChart) {
+                        Text("Chart", color = Color.White)
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color(0xFF121212),
                     titleContentColor = Color.White
@@ -162,12 +257,16 @@ fun WeightTableScreen(
             Divider()
 
             LazyColumn(state = listState) {
-                items(allDates.size) { index ->
-                    val date = allDates[index]
+                items(allDates, key = { date -> date.toEpochDay() }) { date ->
                     val entry = weightMap[date]
                     val planStartDate = plan?.startDateMillis?.let { millisToDate(it) }
                     val expected = expectedForDate(date, plan, planStartDate?.let { weightMap[it]?.weightKg })
-                    val adjusted = adjustedExpectedForDate(date, plan, weightMap)
+                    val adjusted = adjustedExpectedForDate(
+                        date = date,
+                        plan = plan,
+                        latestTrackedDate = newestTrackedDate,
+                        latestTrackedWeight = newestTrackedWeight
+                    )
 
                     // Highlight today's date
                     val isToday = date == LocalDate.now()
@@ -223,16 +322,14 @@ fun WeightTableScreen(
                 existingWeight = existing,
                 onDismiss = { showWeightDialogForDate = null },
                 onSave = { kg, millis ->
-                    scope.launch(Dispatchers.IO) {
+                    scope.launch {
                         repository.addOrUpdateWeight(kg, millis)
-                        launch {
-                            weights = repository.getAllWeightsAscending()
-                            showWeightDialogForDate = null
-                        }
+                        refreshLoadedWeights()
+                        showWeightDialogForDate = null
                     }
                 },
                 onDelete = { millis ->
-                    scope.launch(Dispatchers.IO) {
+                    scope.launch {
                         repository.deleteWeight(millis)
                         // If deleting the baseline date, also clear plan
                         val baselineDate = plan?.startDateMillis
@@ -240,10 +337,8 @@ fun WeightTableScreen(
                             repository.clearExpectedPlan()
                             plan = null
                         }
-                        launch {
-                            weights = repository.getAllWeightsAscending()
-                            showWeightDialogForDate = null
-                        }
+                        refreshLoadedWeights()
+                        showWeightDialogForDate = null
                     }
                 }
             )
@@ -257,20 +352,25 @@ fun WeightTableScreen(
             ExpectedDeltaDialog(
                 date = date,
                 existingWeightOnDate = weightOnDate,
+                existingPlan = plan,
                 onDismiss = { showExpectedDialogForDate = null },
-                onSavePlan = { startMillis, baseline, dailyDelta ->
+                onSavePlan = { startMillis, baseline, mode, dailyDelta, weeklyLossPercent ->
                     // Enforce: must have weight on selected date
                     if (weightOnDate == null) {
                         // You can show a snackbar/toast if you want
                         showExpectedDialogForDate = null
                         return@ExpectedDeltaDialog
                     }
-                    scope.launch(Dispatchers.IO) {
-                        repository.setExpectedPlan(startMillis, baseline, dailyDelta) // replaces any previous plan
-                        launch {
-                            plan = repository.getExpectedPlan()
-                            showExpectedDialogForDate = null
-                        }
+                    scope.launch {
+                        repository.setExpectedPlan(
+                            startMillis = startMillis,
+                            baseline = baseline,
+                            dailyDelta = dailyDelta,
+                            calculationMode = mode,
+                            weeklyLossPercent = weeklyLossPercent
+                        )
+                        plan = repository.getExpectedPlan()
+                        showExpectedDialogForDate = null
                     }
                 }
             )
@@ -340,24 +440,52 @@ fun AddWeightDialog(
 fun ExpectedDeltaDialog(
     date: LocalDate,
     existingWeightOnDate: Float?,
+    existingPlan: ExpectedPlan?,
     onDismiss: () -> Unit,
-    onSavePlan: (startMillis: Long, baseline: Float, dailyDelta: Float) -> Unit
+    onSavePlan: (
+        startMillis: Long,
+        baseline: Float,
+        calculationMode: String,
+        dailyDelta: Float,
+        weeklyLossPercent: Float
+    ) -> Unit
 ) {
-    // Must have a baseline weight
-    var deltaText by remember { mutableStateOf("") }
+    var selectedMode by remember {
+        mutableStateOf(existingPlan?.calculationMode ?: ExpectedPlanMode.DAILY_CHANGE)
+    }
+    var deltaText by remember {
+        mutableStateOf(existingPlan?.dailyDeltaKg?.toString().orEmpty())
+    }
+    var weeklyLossText by remember {
+        mutableStateOf(existingPlan?.weeklyLossPercent?.toString().orEmpty())
+    }
     val focusRequester = remember { FocusRequester() }
+    val dailyDelta = deltaText.replace(',', '.').toFloatOrNull()
+    val weeklyLossPercent = weeklyLossText.replace(',', '.').toFloatOrNull()
+    val validInput = when (selectedMode) {
+        ExpectedPlanMode.WEEKLY_LOSS_PERCENT ->
+            weeklyLossPercent != null && weeklyLossPercent > -100f
+        else -> dailyDelta != null
+    }
 
-    LaunchedEffect(Unit) { focusRequester.requestFocus() }
+    LaunchedEffect(selectedMode) { focusRequester.requestFocus() }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         confirmButton = {
-            Button(onClick = {
-                val dailyDelta = deltaText.replace(',', '.').toFloatOrNull() ?: 0f
-                val millis = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                val baseline = existingWeightOnDate ?: 0f
-                onSavePlan(millis, baseline, dailyDelta)
-            }) { Text("Save") }
+            Button(
+                enabled = existingWeightOnDate != null && validInput,
+                onClick = {
+                    val millis = date.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    onSavePlan(
+                        millis,
+                        existingWeightOnDate ?: 0f,
+                        selectedMode,
+                        dailyDelta ?: 0f,
+                        weeklyLossPercent ?: 0f
+                    )
+                }
+            ) { Text("Save") }
         },
         dismissButton = { Button(onClick = onDismiss) { Text("Cancel") } },
         title = { Text("Expected weight from ${formatDate(date)}") },
@@ -370,18 +498,56 @@ fun ExpectedDeltaDialog(
                     )
                     Spacer(Modifier.height(8.dp))
                 }
-                OutlinedTextField(
-                    value = deltaText,
-                    onValueChange = { v ->
-                        if (v.isBlank() || v.matches(Regex("^[-+]?\\d*(?:[\\.,]\\d*)?$"))) deltaText = v
-                    },
-                    label = { Text("Daily change (kg/day, e.g. 0.05 or -0.05)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions.Default.copy(keyboardType = KeyboardType.Number),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(focusRequester)
-                )
+                TabRow(
+                    selectedTabIndex = if (selectedMode == ExpectedPlanMode.DAILY_CHANGE) 0 else 1
+                ) {
+                    Tab(
+                        selected = selectedMode == ExpectedPlanMode.DAILY_CHANGE,
+                        onClick = { selectedMode = ExpectedPlanMode.DAILY_CHANGE },
+                        text = { Text("Daily change") }
+                    )
+                    Tab(
+                        selected = selectedMode == ExpectedPlanMode.WEEKLY_LOSS_PERCENT,
+                        onClick = { selectedMode = ExpectedPlanMode.WEEKLY_LOSS_PERCENT },
+                        text = { Text("% per week") }
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                if (selectedMode == ExpectedPlanMode.DAILY_CHANGE) {
+                    OutlinedTextField(
+                        value = deltaText,
+                        onValueChange = { value ->
+                            if (value.isBlank() || value.matches(Regex("^[-+]?\\d*(?:[\\.,]\\d*)?$"))) {
+                                deltaText = value
+                            }
+                        },
+                        label = { Text("Daily change (kg/day)") },
+                        supportingText = { Text("Example: -0.05 for a daily loss of 0.05 kg") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions.Default.copy(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = weeklyLossText,
+                        onValueChange = { value ->
+                            if (value.isBlank() || value.matches(Regex("^[-+]?\\d*(?:[\\.,]\\d*)?$"))) {
+                                weeklyLossText = value
+                            }
+                        },
+                        label = { Text("Weekly weight change (%)") },
+                        supportingText = { Text("Negative = cutting, positive = gaining. Example: -0.5") },
+                        isError = weeklyLossPercent != null &&
+                            weeklyLossPercent <= -100f,
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions.Default.copy(keyboardType = KeyboardType.Number),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester)
+                    )
+                }
             }
         }
     )
@@ -396,9 +562,6 @@ private fun millisToDate(millis: Long): LocalDate =
 
 private fun formatDate(date: LocalDate): String = date.format(dateFormatter)
 
-private fun daysBetweenInclusive(start: LocalDate, end: LocalDate): Long =
-    ChronoUnit.DAYS.between(start, end)
-
 private fun expectedForDate(
     date: LocalDate,
     plan: ExpectedPlan?,
@@ -409,30 +572,34 @@ private fun expectedForDate(
     if (date.isBefore(startDate)) return null
     val baseline = baselineWeight ?: plan.baselineWeightKg
     val days = ChronoUnit.DAYS.between(startDate, date).toFloat()
-    return baseline + plan.dailyDeltaKg * days
-}
-
-private fun latestTrackedOnOrBefore(
-    date: LocalDate,
-    weightMap: Map<LocalDate, com.example.floating.caloriecounter.Model.WeightEntry>
-): Pair<LocalDate, Float>? {
-    val key = weightMap.keys.filter { !it.isAfter(date) }.maxOrNull() ?: return null
-    return key to (weightMap[key]?.weightKg ?: return null)
+    return projectExpectedWeight(baseline, days, plan)
 }
 
 // Show adjusted only from the LATEST tracked date onward.
-// Baseline = latest tracked weight; for future days: baseline + delta * days.
+// Baseline = latest tracked weight; future values use the plan's selected formula.
 private fun adjustedExpectedForDate(
     date: LocalDate,
     plan: ExpectedPlan?,
-    weightMap: Map<LocalDate, WeightEntry>
+    latestTrackedDate: LocalDate?,
+    latestTrackedWeight: Float?
 ): Float? {
     if (plan == null) return null
-    // find latest tracked date overall
-    val latestTrackedDate = weightMap.keys.maxOrNull() ?: return null
+    latestTrackedDate ?: return null
     if (date.isBefore(latestTrackedDate)) return null
 
-    val baseline = weightMap[latestTrackedDate]?.weightKg ?: return null
+    val baseline = latestTrackedWeight ?: return null
     val days = java.time.temporal.ChronoUnit.DAYS.between(latestTrackedDate, date).toFloat()
-    return baseline + plan.dailyDeltaKg * days
+    return projectExpectedWeight(baseline, days, plan)
+}
+
+private fun projectExpectedWeight(
+    baselineWeight: Float,
+    days: Float,
+    plan: ExpectedPlan
+): Float = when (plan.calculationMode) {
+    ExpectedPlanMode.WEEKLY_LOSS_PERCENT -> {
+        val weeklyMultiplier = 1.0 + plan.weeklyLossPercent.toDouble() / 100.0
+        (baselineWeight.toDouble() * weeklyMultiplier.pow(days.toDouble() / 7.0)).toFloat()
+    }
+    else -> baselineWeight + plan.dailyDeltaKg * days
 }

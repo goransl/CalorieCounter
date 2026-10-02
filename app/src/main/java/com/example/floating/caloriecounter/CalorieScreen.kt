@@ -19,8 +19,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -45,6 +46,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fastfood
@@ -72,10 +75,13 @@ import androidx.compose.material3.TextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -84,9 +90,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -101,7 +111,10 @@ import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
 import java.time.ZoneId
@@ -209,6 +222,7 @@ fun CalorieCounterApp(
     onBackupRestored: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val foodReorderMutex = remember { Mutex() }
     var totals by remember { mutableStateOf(Totals()) }
     var showDialog by remember { mutableStateOf(false) }
     var allTotals by remember { mutableStateOf(emptyList<Totals>()) }
@@ -216,6 +230,8 @@ fun CalorieCounterApp(
     var currentDate by remember { mutableStateOf(java.time.LocalDate.now()) }
     val dateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var copiedTotalIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var suppressFoodClickId by remember { mutableStateOf<String?>(null) }
     val selectionMode = selectedIds.isNotEmpty()
 
     // Prefill state after OFF lookup
@@ -235,8 +251,12 @@ fun CalorieCounterApp(
 
     // Intercept system back (button or edge-swipe). First back clears selection.
     // Only when nothing is selected will back actually leave the screen/app.
-    BackHandler(enabled = selectionMode) {
-        selectedIds = emptySet()
+    BackHandler(enabled = selectionMode || copiedTotalIds.isNotEmpty()) {
+        if (selectionMode) {
+            selectedIds = emptySet()
+        } else {
+            copiedTotalIds = emptyList()
+        }
         // (optional) Toast/Snackbar to indicate selection cleared
         // Toast.makeText(context, "Selection cleared", Toast.LENGTH_SHORT).show()
     }
@@ -296,6 +316,7 @@ fun CalorieCounterApp(
         totals = repository.getAggregatedTotalsForDate(currentDate)
         allTotals = repository.getAllTotalsForDate(currentDate)
         selectedIds = emptySet()
+        copiedTotalIds = emptyList()
         onBackupRestored()
     }
 
@@ -316,28 +337,45 @@ fun CalorieCounterApp(
     ) {
         Scaffold (
             floatingActionButton = {
-                if (selectionMode) {
-                    ExtendedFloatingActionButton(
-                        onClick = {
-                            scope.launch {
-                                repository.copyTotalsToToday(selectedIds)
-
-                                // Optional: jump to today so user immediately sees the copies
-                                // currentDate = java.time.LocalDate.now()
-
-                                // Refresh list/totals (only needed if you're already on today)
-                                if (currentDate == java.time.LocalDate.now()) {
-                                    allTotals = repository.getAllTotalsForDate(currentDate)
-                                    totals = repository.getAggregatedTotalsForDate(currentDate)
-                                }
-
-                                // exit selection mode
+                when {
+                    selectionMode -> {
+                        ExtendedFloatingActionButton(
+                            onClick = {
+                                copiedTotalIds = allTotals
+                                    .filter { it.id in selectedIds }
+                                    .map { it.id }
                                 selectedIds = emptySet()
-                            }
-                        },
-                        icon = { Icon(Icons.Default.Add, contentDescription = "Copy to Today") },
-                        text = { Text("Copy to Today") }
-                    )
+                            },
+                            icon = { Icon(Icons.Default.ContentCopy, contentDescription = "Copy") },
+                            text = { Text("Copy") }
+                        )
+                    }
+
+                    copiedTotalIds.isNotEmpty() -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ExtendedFloatingActionButton(
+                                onClick = { copiedTotalIds = emptyList() },
+                                icon = { Icon(Icons.Default.Close, contentDescription = "Cancel") },
+                                text = { Text("Cancel") }
+                            )
+                            ExtendedFloatingActionButton(
+                                onClick = {
+                                    val idsToPaste = copiedTotalIds
+                                    val pasteDate = currentDate
+                                    scope.launch {
+                                        repository.copyTotalsToDate(idsToPaste, pasteDate)
+                                        if (currentDate == pasteDate) {
+                                            allTotals = repository.getAllTotalsForDate(pasteDate)
+                                            totals = repository.getAggregatedTotalsForDate(pasteDate)
+                                        }
+                                        copiedTotalIds = emptyList()
+                                    }
+                                },
+                                icon = { Icon(Icons.Default.ContentPaste, contentDescription = "Paste") },
+                                text = { Text("Paste") }
+                            )
+                        }
+                    }
                 }
             }
         ) { padding ->
@@ -611,45 +649,158 @@ fun CalorieCounterApp(
                     // Spacer between buttons and totals list
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    val foodListState = rememberLazyListState()
+                    val orderedTotals = remember(allTotals) {
+                        mutableStateListOf<Totals>().apply { addAll(allTotals) }
+                    }
+                    var draggingTotalId by remember { mutableStateOf<String?>(null) }
+                    var initialDraggedOffset by remember { mutableFloatStateOf(0f) }
+                    var draggedDistance by remember { mutableFloatStateOf(0f) }
+                    var movedDuringDrag by remember { mutableStateOf(false) }
+
                     // LazyColumn to display the list of totals
                     LazyColumn(
+                        state = foodListState,
                         modifier = Modifier.fillMaxWidth(),
                         contentPadding = PaddingValues(vertical = 8.dp) // Add vertical padding between items
                     ) {
-                        items(allTotals, key = { it.id }) { total ->
+                        items(orderedTotals, key = { it.id }) { total ->
                             val isSelected = selectedIds.contains(total.id)
+                            val draggedItemInfo = if (draggingTotalId == total.id) {
+                                foodListState.layoutInfo.visibleItemsInfo
+                                    .firstOrNull { it.key == total.id }
+                            } else {
+                                null
+                            }
+                            val dragTranslationY = draggedItemInfo?.let { info ->
+                                initialDraggedOffset + draggedDistance - info.offset
+                            } ?: 0f
+                            val startFoodDrag: () -> Unit = {
+                                foodListState.layoutInfo.visibleItemsInfo
+                                    .firstOrNull { it.key == total.id }
+                                    ?.let { itemInfo ->
+                                        draggingTotalId = total.id
+                                        initialDraggedOffset = itemInfo.offset.toFloat()
+                                        draggedDistance = 0f
+                                        movedDuringDrag = false
+                                    }
+                            }
+                            val dragFood: (Float) -> Unit = { deltaY ->
+                                if (draggingTotalId == total.id) {
+                                    draggedDistance += deltaY
+                                    val visibleItems = foodListState.layoutInfo.visibleItemsInfo
+                                    val currentInfo = visibleItems.firstOrNull { it.key == total.id }
+                                    val from = orderedTotals.indexOfFirst { it.id == total.id }
+                                    if (currentInfo != null && from >= 0) {
+                                        val draggedCenter = initialDraggedOffset + draggedDistance +
+                                            currentInfo.size / 2f
+                                        val direction = when {
+                                            deltaY > 0f -> 1
+                                            deltaY < 0f -> -1
+                                            else -> 0
+                                        }
+                                        val to = from + direction
+                                        val neighbour = orderedTotals.getOrNull(to)
+                                        val neighbourInfo = neighbour?.let { candidate ->
+                                            visibleItems.firstOrNull { it.key == candidate.id }
+                                        }
+                                        val crossedNeighbour = neighbourInfo?.let { info ->
+                                            val neighbourCenter = info.offset + info.size / 2f
+                                            if (direction > 0) {
+                                                draggedCenter > neighbourCenter
+                                            } else {
+                                                direction < 0 && draggedCenter < neighbourCenter
+                                            }
+                                        } ?: false
+                                        if (crossedNeighbour) {
+                                            val firstVisibleIndex = foodListState.firstVisibleItemIndex
+                                            val firstVisibleOffset = foodListState.firstVisibleItemScrollOffset
+                                            val moved = orderedTotals.removeAt(from)
+                                            orderedTotals.add(to, moved)
+                                            foodListState.requestScrollToItem(
+                                                firstVisibleIndex,
+                                                firstVisibleOffset
+                                            )
+                                            movedDuringDrag = true
+                                        }
+                                    }
+                                }
+                            }
+                            val finishFoodDrag: () -> Unit = {
+                                val reorderedIds = orderedTotals.map { it.id }
+                                val shouldPersist = movedDuringDrag
+                                draggingTotalId = null
+                                initialDraggedOffset = 0f
+                                draggedDistance = 0f
+                                movedDuringDrag = false
+                                if (shouldPersist) {
+                                    selectedIds = emptySet()
+                                    allTotals = orderedTotals.toList()
+                                    scope.launch {
+                                        foodReorderMutex.withLock {
+                                            repository.reorderTotals(date, reorderedIds)
+                                        }
+                                    }
+                                } else {
+                                    orderedTotals.clear()
+                                    orderedTotals.addAll(allTotals)
+                                }
+                                scope.launch {
+                                    delay(150)
+                                    if (suppressFoodClickId == total.id) {
+                                        suppressFoodClickId = null
+                                    }
+                                }
+                            }
 
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(vertical = 4.dp)
                                     .padding(horizontal = 4.dp)
-                                    .combinedClickable(
-                                        onClick = {
-                                            if (selectionMode) {
-                                                // toggle selection
-                                                selectedIds = if (isSelected) selectedIds - total.id else selectedIds + total.id
-                                                // if empty after toggle, we’re back to default mode automatically
-                                            } else {
-                                                // default behavior: open edit dialog
-                                                selectedTotal = total
-                                                showDialog = true
-                                            }
-                                        },
-                                        onLongClick = {
-                                            // enter selection mode (or toggle if already in it)
-                                            selectedIds = if (isSelected && selectedIds.size == 1) {
-                                                // long-press on the only selected item -> unselect -> exit mode
-                                                emptySet()
-                                            } else if (selectionMode) {
-                                                // toggle this one
-                                                if (isSelected) selectedIds - total.id else selectedIds + total.id
-                                            } else {
-                                                // start selection mode with just this item
-                                                setOf(total.id)
-                                            }
+                                    .then(
+                                        if (draggingTotalId == total.id) {
+                                            Modifier
+                                        } else {
+                                            Modifier.animateItem(
+                                                fadeInSpec = null,
+                                                fadeOutSpec = null
+                                            )
                                         }
-                                    ),
+                                    )
+                                    .then(
+                                        if (draggingTotalId == total.id) {
+                                            Modifier
+                                                .zIndex(1f)
+                                                .graphicsLayer { translationY = dragTranslationY }
+                                        } else {
+                                            Modifier
+                                        }
+                                    )
+                                    .foodDragGesture(
+                                        onDragStart = startFoodDrag,
+                                        onDrag = dragFood,
+                                        onDragEnd = finishFoodDrag,
+                                        onDragCancel = finishFoodDrag,
+                                        onLongClick = {
+                                            suppressFoodClickId = total.id
+                                            selectedIds = selectedIds + total.id
+                                        }
+                                    )
+                                    .clickable {
+                                        if (suppressFoodClickId == total.id) {
+                                            suppressFoodClickId = null
+                                        } else if (selectionMode) {
+                                            selectedIds = if (isSelected) {
+                                                selectedIds - total.id
+                                            } else {
+                                                selectedIds + total.id
+                                            }
+                                        } else {
+                                            selectedTotal = total
+                                            showDialog = true
+                                        }
+                                    },
                                 shape = MaterialTheme.shapes.small,
                                 elevation = CardDefaults.cardElevation(4.dp),
                                 border = if (isSelected) BorderStroke(2.dp, Color.White) else null
@@ -774,5 +925,37 @@ fun CalorieCounterApp(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun Modifier.foodDragGesture(
+    onDragStart: () -> Unit,
+    onDrag: (Float) -> Unit,
+    onDragEnd: () -> Unit,
+    onDragCancel: () -> Unit,
+    onLongClick: () -> Unit
+): Modifier {
+    val hapticFeedback = LocalHapticFeedback.current
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnDragCancel by rememberUpdatedState(onDragCancel)
+    val currentOnLongClick by rememberUpdatedState(onLongClick)
+
+    return pointerInput(Unit) {
+        detectDragGesturesAfterLongPress(
+            onDragStart = {
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                currentOnLongClick()
+                currentOnDragStart()
+            },
+            onDragEnd = { currentOnDragEnd() },
+            onDragCancel = { currentOnDragCancel() },
+            onDrag = { change, dragAmount ->
+                change.consume()
+                currentOnDrag(dragAmount.y)
+            }
+        )
     }
 }

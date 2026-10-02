@@ -37,10 +37,18 @@ class WorkoutProgressTest {
         assertEquals("latest", stats.latestEntry?.id)
         assertEquals(700f, stats.latestVolumeKg, 0.001f)
         assertEquals(60f, stats.maxWeightKg, 0.001f)
+        assertEquals(5, stats.maxWeightSet?.reps)
+        assertEquals(2_000L, stats.maxWeightDateMillis)
         assertEquals(50f, stats.bestSet?.weightKg ?: 0f, 0.001f)
         assertEquals(10, stats.bestSet?.reps)
+        assertEquals(1_000L, stats.bestSetDateMillis)
+        assertEquals(70f, stats.bestOneRepMaxKg, 0.001f)
+        assertEquals(2_000L, stats.bestOneRepMaxDateMillis)
         assertEquals(listOf(1_000L, 2_000L), stats.chartPoints.map { it.dateMillis })
         assertEquals(listOf(500f, 700f), stats.chartPoints.map { it.volumeKg })
+        assertEquals(listOf(500f, 400f), stats.chartPoints.map { it.bestSetVolumeKg })
+        assertEquals(66.66667f, stats.chartPoints[0].bestOneRepMaxKg, 0.001f)
+        assertEquals(70f, stats.chartPoints[1].bestOneRepMaxKg, 0.001f)
     }
 
     @Test

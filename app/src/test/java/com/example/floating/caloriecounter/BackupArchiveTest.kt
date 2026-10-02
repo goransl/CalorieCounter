@@ -48,7 +48,7 @@ class BackupArchiveTest {
         val archive = decodeBackupZip(ByteArrayInputStream(bytes))
 
         assertEquals(original, archive.data)
-        assertEquals(2, archive.manifest?.formatVersion)
+        assertEquals(6, archive.manifest?.formatVersion)
         assertEquals("1.2.3-test", archive.manifest?.appVersion)
         assertEquals(1_700_000_000_000L, archive.manifest?.createdAtEpochMillis)
         assertFalse(archive.isLegacy)
@@ -82,6 +82,7 @@ class BackupArchiveTest {
 
         assertTrue(archive.isLegacy)
         assertTrue(archive.data.totals.single().included)
+        assertEquals(0, archive.data.totals.single().position)
         assertTrue(archive.data.totals.single().toRealmModel().included)
         assertEquals(null, archive.data.expectedPlan)
     }
@@ -119,6 +120,7 @@ class BackupArchiveTest {
         assertTrue(realmWorkout.completed)
         assertTrue(realmWorkout.sets.single().completed)
         assertEquals(120, realmWorkout.sets.single().restSeconds)
+        assertEquals(116.66667f, realmWorkout.sets.single().oneRepMaxKg, 0.001f)
     }
 
     @Test
@@ -226,6 +228,7 @@ class BackupArchiveTest {
                 totalFat = 6f,
                 totalCarbs = 11.8f,
                 timestamp = 1_700_000_000_200L,
+                position = 2,
                 included = false,
                 cost = 0.5f
             )
@@ -233,7 +236,9 @@ class BackupArchiveTest {
         expectedPlan = ExpectedPlanBackup(
             startDateMillis = 1_700_000_000_300L,
             baselineWeightKg = 82.5f,
-            dailyDeltaKg = -0.05f
+            dailyDeltaKg = -0.05f,
+            calculationMode = "weekly_loss_percent",
+            weeklyLossPercent = -0.5f
         ),
         weights = listOf(
             WeightEntryBackup(
@@ -256,6 +261,7 @@ class BackupArchiveTest {
                     WorkoutSetBackup(
                         weightKg = 100f,
                         reps = 5,
+                        oneRepMaxKg = 116.66667f,
                         rest = "1:30",
                         restSeconds = 90,
                         notes = "Controlled eccentric",
