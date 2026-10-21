@@ -129,10 +129,28 @@ private enum class MainTab(val label: String) {
     Workout("Workout")
 }
 
+private const val MAIN_SCREEN_PREFERENCES = "main_screen_preferences"
+private const val LAST_MAIN_TAB_KEY = "last_main_tab"
+
 @Composable
 fun MainScreen(repository: FoodRepository) {
-    var selectedTab by rememberSaveable { mutableStateOf(MainTab.Calories) }
+    val context = LocalContext.current
+    val mainScreenPreferences = remember(context) {
+        context.getSharedPreferences(MAIN_SCREEN_PREFERENCES, Context.MODE_PRIVATE)
+    }
+    val initialTab = remember(mainScreenPreferences) {
+        val savedTabName = mainScreenPreferences.getString(LAST_MAIN_TAB_KEY, null)
+        MainTab.entries.firstOrNull { tab -> tab.name == savedTabName } ?: MainTab.Calories
+    }
+    var selectedTab by rememberSaveable { mutableStateOf(initialTab) }
     var dataRevision by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(selectedTab) {
+        mainScreenPreferences.edit()
+            .putString(LAST_MAIN_TAB_KEY, selectedTab.name)
+            .apply()
+    }
+
     val navItemColors = NavigationBarItemDefaults.colors(
         selectedIconColor = MaterialTheme.colorScheme.onPrimary,
         selectedTextColor = MaterialTheme.colorScheme.primary,
