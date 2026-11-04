@@ -91,6 +91,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -105,6 +106,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import org.json.JSONObject
+import java.math.BigDecimal
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -140,70 +142,137 @@ fun DecimalOnlyTextField(
     )
 }
 
+private val foodWeightExpressionPattern =
+    Regex("\\+?(?:\\d+(?:[.,]\\d*)?|[.,]\\d+)(?:[+-](?:\\d+(?:[.,]\\d*)?|[.,]\\d+))*")
+private val foodWeightTermPattern = Regex("[+-]?(?:\\d+(?:[.,]\\d*)?|[.,]\\d+)")
+
+internal fun parseFoodWeightExpression(input: String): Float? {
+    val expression = input.trim().replace(Regex("\\s*([+-])\\s*"), "\$1")
+    if (!foodWeightExpressionPattern.matches(expression)) return null
+
+    return try {
+        val result = foodWeightTermPattern.findAll(expression)
+            .fold(BigDecimal.ZERO) { sum, term ->
+                sum.add(BigDecimal(term.value.replace(',', '.')))
+            }
+        result.toFloat().takeIf { result.signum() >= 0 && it.isFinite() }
+    } catch (_: NumberFormatException) {
+        null
+    }
+}
+
+private fun formatFoodWeight(value: Float): String =
+    BigDecimal(value.toString()).stripTrailingZeros().toPlainString()
+
+@Composable
+private fun FoodWeightTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+    onNext: () -> Unit
+) {
+    val calculatedWeight = parseFoodWeightExpression(value)
+    val hasOperation = value.drop(1).any { it == '+' || it == '-' }
+    TextField(
+        value = value,
+        onValueChange = { input ->
+            if (input.all { it in '0'..'9' || it in ".,+-" || it.isWhitespace() }) {
+                onValueChange(input)
+            }
+        },
+        label = { Text("Weight (g)") },
+        supportingText = if (hasOperation && calculatedWeight != null) {
+            { Text("= ${formatFoodWeight(calculatedWeight)} g") }
+        } else {
+            null
+        },
+        isError = value.isNotBlank() && calculatedWeight == null,
+        modifier = Modifier.focusRequester(focusRequester),
+        singleLine = true,
+        keyboardOptions = KeyboardOptions.Default.copy(
+            imeAction = ImeAction.Next,
+            keyboardType = KeyboardType.Phone
+        ),
+        keyboardActions = KeyboardActions(onNext = { onNext() })
+    )
+}
+
 @Composable
 fun EditTotalDialog(
     total: Totals,
     onDismiss: () -> Unit,
     repository: FoodRepository,
-    onUpdate: (Totals) -> Unit,
+    onUpdate: suspend (Totals) -> Unit,
     onDelete: (Totals) -> Unit
 ) {
     val scope = rememberCoroutineScope()
 
     //val associatedFoods = repository.getFoodByName(total.name)
     // Maintain local states for the other editable fields
-    var weight by remember { mutableStateOf(formatDecimal(total.weight)) }
+    var weight by remember { mutableStateOf(formatFoodWeight(total.weight)) }
+    val weightFocusRequester = remember { FocusRequester() }
+    val calculatedWeight = if (weight.isBlank()) 0f else parseFoodWeightExpression(weight)
+    var isSaving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
     /*var proteins by remember { mutableStateOf(formatDecimal(associatedFoods!!.proteins)) }
     var fat by remember { mutableStateOf(formatDecimal(associatedFoods!!.fat)) }
     var carbs by remember { mutableStateOf(formatDecimal(associatedFoods!!.carbs)) }
     var calories by remember { mutableStateOf(formatDecimal(associatedFoods!!.calories)) }*/
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isSaving) onDismiss() },
         confirmButton = {
-            Button(onClick = {
+            Button(enabled = calculatedWeight != null && !isSaving, onClick = {
                 // Recalculate totals based on associated foods
-                val updatedWeight = weight.toFloatOrNull() ?: 0f
+                val updatedWeight = calculatedWeight ?: return@Button
                 /*val updatedProteins = proteins.toFloatOrNull() ?: 0f
                 val updatedFat = fat.toFloatOrNull() ?: 0f
                 val updatedCarbs = carbs.toFloatOrNull() ?: 0f
                 val updatedCalories = calories.toFloatOrNull() ?: 0f*/
 
+                isSaving = true
+                saveError = null
                 scope.launch {
-                    val associatedFoods = repository.getAllFoods().filter { it.name == total.name }
+                    try {
+                        val associatedFoods = repository.getAllFoods().filter { it.name == total.name }
 
-                    val food = repository.getFoodByName(total.name)
-                    val newCost =
-                        if (food != null && food.price > 0f && food.priceGrams > 0f) {
-                            round2((food.price / food.priceGrams) * updatedWeight)
-                        } else 0f
+                        val food = repository.getFoodByName(total.name)
+                        val newCost =
+                            if (food != null && food.price > 0f && food.priceGrams > 0f) {
+                                round2((food.price / food.priceGrams) * updatedWeight)
+                            } else 0f
 
+                        val recalculatedTotals = Totals().apply {
+                            id = total.id
+                            name = total.name // Prevent name editing
+                            this.weight = updatedWeight
+                            totalProteins = associatedFoods.map { it.proteins * (this.weight / 100f) }.sum()
+                            totalFat = associatedFoods.map { it.fat * (this.weight / 100f) }.sum()
+                            totalCarbs = associatedFoods.map { it.carbs * (this.weight / 100f) }.sum()
+                            totalCalories = associatedFoods.map { it.calories * (this.weight / 100f) }.sum()
+                            cost = newCost
+                        }
 
-                    val recalculatedTotals = Totals().apply {
-                        id = total.id
-                        name = total.name // Prevent name editing
-                        this.weight = updatedWeight
-                        totalProteins = associatedFoods.map { it.proteins * (this.weight / 100f) }.sum()
-                        totalFat = associatedFoods.map { it.fat * (this.weight / 100f) }.sum()
-                        totalCarbs = associatedFoods.map { it.carbs * (this.weight / 100f) }.sum()
-                        totalCalories = associatedFoods.map { it.calories * (this.weight / 100f) }.sum()
-                        cost = newCost
+                        onUpdate(recalculatedTotals)
+                        onDismiss()
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (error: Exception) {
+                        saveError = error.message ?: "Food could not be updated."
+                        isSaving = false
                     }
-
-                    onUpdate(recalculatedTotals)
                 }
-                onDismiss()
             }) {
-                Text("Save")
+                Text(if (isSaving) "Saving..." else "Save")
             }
         },
         dismissButton = {
             Row {
-                Button(onClick = onDismiss) {
+                Button(onClick = onDismiss, enabled = !isSaving) {
                     Text("Cancel")
                 }
                 Spacer(modifier = Modifier.width(8.dp))
-                Button(onClick = {
+                Button(enabled = !isSaving, onClick = {
                     onDelete(total) // Delete the total
                     onDismiss()
                 }) {
@@ -214,11 +283,14 @@ fun EditTotalDialog(
         title = { Text("Edit " + total.name) },
         text = {
             Column {
-                DecimalOnlyTextField(
+                saveError?.let { message ->
+                    Text(message, color = MaterialTheme.colorScheme.error)
+                    Spacer(Modifier.height(8.dp))
+                }
+                FoodWeightTextField(
                     value = weight,
                     onValueChange = { weight = it },
-                    label = { Text("Weight (g)") },
-                    focusRequester = FocusRequester(),
+                    focusRequester = weightFocusRequester,
                     onNext = { /* Handle next action if needed */ }
                 )
             }
@@ -248,7 +320,7 @@ fun AddFoodDialog(
     val keyboardController = LocalSoftwareKeyboardController.current
     val dropdownMaxHeight = LocalConfiguration.current.screenHeightDp.dp
 
-    val weightFocusRequester = FocusRequester()
+    val weightFocusRequester = remember { FocusRequester() }
     val caloriesFocusRequester = FocusRequester()
     val proteinsFocusRequester = FocusRequester()
     val fatFocusRequester = FocusRequester()
@@ -256,6 +328,7 @@ fun AddFoodDialog(
 
     var name by remember { mutableStateOf(initialName) }
     var weight by remember { mutableStateOf(initialWeight) }
+    val calculatedWeight = if (weight.isBlank()) 0f else parseFoodWeightExpression(weight)
     var calories by remember { mutableStateOf(initialCalories) }
     var proteins by remember { mutableStateOf(initialProteins) }
     var fat by remember { mutableStateOf(initialFat) }
@@ -286,11 +359,11 @@ fun AddFoodDialog(
         },
         confirmButton = {
             Button(
-                enabled = !isSaving,
+                enabled = !isSaving && calculatedWeight != null,
                 onClick = {
                     if (isSaving) return@Button
 
-                    val weightValue = weight.toFloatOrNull() ?: 0f
+                    val weightValue = calculatedWeight ?: return@Button
 
                     val caloriesValue = (calories.toFloatOrNull() ?: 0f)
                     val proteinsValue = (proteins.toFloatOrNull() ?: 0f)
@@ -439,7 +512,7 @@ fun AddFoodDialog(
                             name = suggestion
                             showSuggestions = false
                             repository.getFoodByName(suggestion)?.let { existingFood ->
-                                weight = formatDecimal(existingFood.weight)
+                                weight = formatFoodWeight(existingFood.weight)
                                 calories = formatDecimal(existingFood.calories)
                                 proteins = formatDecimal(existingFood.proteins)
                                 fat = formatDecimal(existingFood.fat)
@@ -467,10 +540,9 @@ fun AddFoodDialog(
                 } else {
                 // Inputs with 8dp margin between them
                 Spacer(modifier = Modifier.height(8.dp))
-                DecimalOnlyTextField(
+                FoodWeightTextField(
                     value = weight,
                     onValueChange = { weight = it },
-                    label = { Text("Weight (g)") },
                     focusRequester = weightFocusRequester,
                     onNext = { caloriesFocusRequester.requestFocus() }
                 )

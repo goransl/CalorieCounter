@@ -142,6 +142,7 @@ fun WorkoutScreen(
     var historyProgressExerciseName by remember { mutableStateOf<String?>(null) }
     var progressExerciseName by remember { mutableStateOf<String?>(null) }
     var progressEntries by remember { mutableStateOf(emptyList<WorkoutEntrySnapshot>()) }
+    var renameExerciseName by remember { mutableStateOf<String?>(null) }
     var selectedEntry by remember { mutableStateOf<WorkoutEntrySnapshot?>(null) }
     var dialogInitialDate by remember { mutableStateOf(LocalDate.now()) }
     var showEntryDialog by remember { mutableStateOf(false) }
@@ -187,7 +188,7 @@ fun WorkoutScreen(
 
     BackHandler(
         enabled = isVisible && progressExerciseName != null &&
-            !showEntryDialog && !showCopyDialog
+            !showEntryDialog && !showCopyDialog && renameExerciseName == null
     ) {
         progressExerciseName = null
     }
@@ -254,7 +255,8 @@ fun WorkoutScreen(
                         selectedEntry = entry
                         dialogInitialDate = millisToLocalDate(entry.dateMillis)
                         showEntryDialog = true
-                    }
+                    },
+                    onRename = { renameExerciseName = currentProgressExercise }
                 )
             } else {
                 TabRow(selectedTabIndex = selectedView.ordinal) {
@@ -422,6 +424,124 @@ fun WorkoutScreen(
             }
         )
     }
+
+    renameExerciseName?.let { oldName ->
+        RenameWorkoutExerciseDialog(
+            repository = repository,
+            oldName = oldName,
+            onDismiss = { renameExerciseName = null },
+            onRenamed = { newName, renamedCount ->
+                renameExerciseName = null
+                if (historyProgressExerciseName == oldName) {
+                    historyProgressExerciseName = newName
+                }
+                if (searchText.trim() == oldName) {
+                    searchText = newName
+                }
+                openExerciseProgress(newName)
+                refreshTrigger++
+                Toast.makeText(
+                    context,
+                    "$renamedCount exercise records renamed.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        )
+    }
+}
+
+@Composable
+private fun RenameWorkoutExerciseDialog(
+    repository: FoodRepository,
+    oldName: String,
+    onDismiss: () -> Unit,
+    onRenamed: (String, Int) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var newName by remember(oldName) { mutableStateOf(oldName) }
+    var isSaving by remember(oldName) { mutableStateOf(false) }
+    var errorMessage by remember(oldName) { mutableStateOf<String?>(null) }
+    val sourceCount = remember(oldName) { repository.countWorkoutEntriesByName(oldName) }
+    val normalizedNewName = newName.trim()
+    val canRename = normalizedNewName.isNotEmpty() && normalizedNewName != oldName
+    val targetCount = remember(oldName, normalizedNewName) {
+        if (canRename) repository.countWorkoutEntriesByName(normalizedNewName) else 0
+    }
+    val willMerge = targetCount > 0
+
+    AlertDialog(
+        onDismissRequest = { if (!isSaving) onDismiss() },
+        title = { Text("Rename exercise everywhere") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Current name: $oldName")
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = {
+                        newName = it
+                        errorMessage = null
+                    },
+                    label = { Text("New exercise name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    enabled = !isSaving,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words,
+                        imeAction = ImeAction.Done
+                    )
+                )
+                Text(
+                    "This changes all $sourceCount records, including planned and completed days. " +
+                        "Sets, notes, and dates stay unchanged.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                if (willMerge) {
+                    Text(
+                        "$targetCount records already use this name. Their histories will be merged.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                errorMessage?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = canRename && !isSaving,
+                onClick = {
+                    isSaving = true
+                    scope.launch {
+                        try {
+                            val renamedCount = withContext(Dispatchers.IO) {
+                                repository.renameWorkoutExercise(
+                                    oldName = oldName,
+                                    newName = normalizedNewName,
+                                    allowMerge = willMerge
+                                )
+                            }
+                            onRenamed(normalizedNewName, renamedCount)
+                        } catch (error: CancellationException) {
+                            throw error
+                        } catch (error: Throwable) {
+                            errorMessage = error.message ?: "Exercise could not be renamed."
+                            isSaving = false
+                        }
+                    }
+                }
+            ) {
+                if (isSaving) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                } else {
+                    Text(if (willMerge) "Merge and rename" else "Rename")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isSaving) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

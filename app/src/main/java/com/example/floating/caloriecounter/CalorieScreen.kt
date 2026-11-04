@@ -249,6 +249,7 @@ fun CalorieCounterApp(
     val dateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy")
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var copiedTotalIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    var isCopyingTotals by remember { mutableStateOf(false) }
     var suppressFoodClickId by remember { mutableStateOf<String?>(null) }
     val selectionMode = selectedIds.isNotEmpty()
 
@@ -338,6 +339,29 @@ fun CalorieCounterApp(
         onBackupRestored()
     }
 
+    fun pasteCopiedTotals(targetDate: java.time.LocalDate, showTargetDate: Boolean) {
+        if (isCopyingTotals || copiedTotalIds.isEmpty()) return
+        val idsToPaste = copiedTotalIds
+        isCopyingTotals = true
+        scope.launch {
+            try {
+                repository.copyTotalsToDate(idsToPaste, targetDate)
+                if (showTargetDate) currentDate = targetDate
+                if (currentDate == targetDate) {
+                    allTotals = repository.getAllTotalsForDate(targetDate)
+                    totals = repository.getAggregatedTotalsForDate(targetDate)
+                }
+                copiedTotalIds = emptyList()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                Toast.makeText(context, error.message ?: "Could not copy food", Toast.LENGTH_SHORT).show()
+            } finally {
+                isCopyingTotals = false
+            }
+        }
+    }
+
     // Fetch totals by summing all rows in the Totals table
     LaunchedEffect(currentDate) {
         totals = repository.getAggregatedTotalsForDate(currentDate)
@@ -371,27 +395,23 @@ fun CalorieCounterApp(
 
                     copiedTotalIds.isNotEmpty() -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            ExtendedFloatingActionButton(
+                            OutlinedButton(
                                 onClick = { copiedTotalIds = emptyList() },
-                                icon = { Icon(Icons.Default.Close, contentDescription = "Cancel") },
-                                text = { Text("Cancel") }
-                            )
-                            ExtendedFloatingActionButton(
+                                enabled = !isCopyingTotals,
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            ) { Text("Cancel") }
+                            Button(
+                                onClick = { pasteCopiedTotals(currentDate, showTargetDate = false) },
+                                enabled = !isCopyingTotals,
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            ) { Text("Paste") }
+                            Button(
                                 onClick = {
-                                    val idsToPaste = copiedTotalIds
-                                    val pasteDate = currentDate
-                                    scope.launch {
-                                        repository.copyTotalsToDate(idsToPaste, pasteDate)
-                                        if (currentDate == pasteDate) {
-                                            allTotals = repository.getAllTotalsForDate(pasteDate)
-                                            totals = repository.getAggregatedTotalsForDate(pasteDate)
-                                        }
-                                        copiedTotalIds = emptyList()
-                                    }
+                                    pasteCopiedTotals(java.time.LocalDate.now(), showTargetDate = true)
                                 },
-                                icon = { Icon(Icons.Default.ContentPaste, contentDescription = "Paste") },
-                                text = { Text("Paste") }
-                            )
+                                enabled = !isCopyingTotals,
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            ) { Text("Copy to today") }
                         }
                     }
                 }
@@ -927,11 +947,9 @@ fun CalorieCounterApp(
                     },
                     repository = repository,
                     onUpdate = { updatedTotal ->
-                        scope.launch {
-                            repository.updateTotals(updatedTotal)
-                            allTotals = repository.getAllTotalsForDate(currentDate)
-                            totals = repository.getAggregatedTotalsForDate(currentDate)
-                        }
+                        repository.updateTotals(updatedTotal)
+                        allTotals = repository.getAllTotalsForDate(currentDate)
+                        totals = repository.getAggregatedTotalsForDate(currentDate)
                     },
                     onDelete = { totalToDelete ->
                         scope.launch {

@@ -22,11 +22,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -176,7 +180,8 @@ private fun workoutSetOneRepMax(set: WorkoutSetSnapshot): Float =
 internal fun WorkoutProgressView(
     exerciseName: String,
     entries: List<WorkoutEntrySnapshot>,
-    onEdit: (WorkoutEntrySnapshot) -> Unit
+    onEdit: (WorkoutEntrySnapshot) -> Unit,
+    onRename: () -> Unit
 ) {
     val stats = remember(entries) {
         calculateWorkoutProgress(entries, chartLimit = Int.MAX_VALUE)
@@ -222,11 +227,17 @@ internal fun WorkoutProgressView(
     ) {
         item {
             Column {
-                Text(
-                    text = exerciseName,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = exerciseName,
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onRename) {
+                        Icon(Icons.Default.Edit, contentDescription = "Rename exercise everywhere")
+                    }
+                }
                 Text(
                     text = "Completed exercise progress",
                     color = MaterialTheme.colorScheme.onSurfaceVariant

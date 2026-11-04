@@ -848,6 +848,49 @@ class FoodRepository : AutoCloseable {
             .map { it.toSnapshot() }
     }
 
+    fun countWorkoutEntriesByName(name: String): Int {
+        val normalizedName = name.trim()
+        if (normalizedName.isEmpty()) return 0
+        return realm.query<WorkoutEntry>("name == $0", normalizedName).count().find().toInt()
+    }
+
+    /** Renames every occurrence, including planned days, without changing workout details. */
+    suspend fun renameWorkoutExercise(
+        oldName: String,
+        newName: String,
+        allowMerge: Boolean
+    ): Int {
+        val sourceName = oldName.trim()
+        val targetName = newName.trim()
+        require(sourceName.isNotEmpty() && targetName.isNotEmpty()) {
+            "Exercise name is required."
+        }
+        require(sourceName != targetName) { "Enter a different exercise name." }
+
+        return realm.write {
+            val matchingEntries = query<WorkoutEntry>("name == $0", sourceName).find().toList()
+            require(matchingEntries.isNotEmpty()) { "Exercise no longer exists." }
+            if (!allowMerge && query<WorkoutEntry>("name == $0", targetName).first().find() != null) {
+                throw IllegalArgumentException("The new name already has records. Confirm the merge and try again.")
+            }
+
+            matchingEntries.forEach { it.name = targetName }
+
+            // WorkoutName.name is a Realm primary key, so replace rather than mutate it.
+            query<WorkoutName>("name == $0", sourceName).first().find()?.let { delete(it) }
+            val targetSuggestion = query<WorkoutName>("name == $0", targetName).first().find()
+            if (targetSuggestion != null) {
+                targetSuggestion.lastUsed = System.currentTimeMillis()
+            } else {
+                copyToRealm(WorkoutName().apply {
+                    name = targetName
+                    lastUsed = System.currentTimeMillis()
+                })
+            }
+            matchingEntries.size
+        }
+    }
+
     fun hasCompletedWorkoutHistory(name: String): Boolean {
         val normalizedName = name.trim()
         if (normalizedName.isEmpty()) return false
